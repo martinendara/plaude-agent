@@ -1,17 +1,12 @@
 import { FatalError } from "workflow";
 
 import type { ApprovalHookPayload } from "@/lib/approval-types";
+import { callSlack, requireEnv } from "@/lib/slack-api";
 import { buildApprovalBlocks, buildDecisionBlocks } from "@/lib/slack-blocks";
 
 type SlackMessageRef = {
   channelId: string;
   messageTs: string;
-};
-
-type SlackResponse = {
-  ok: boolean;
-  error?: string;
-  ts?: string;
 };
 
 export async function createHookToken(): Promise<string> {
@@ -68,37 +63,4 @@ export async function updateApprovalMessage({
       : "Approval timed out",
     blocks: buildDecisionBlocks({ request, decision, timeoutMs }),
   });
-}
-
-async function callSlack(
-  method: string,
-  body: Record<string, unknown>
-): Promise<SlackResponse> {
-  const botToken = requireEnv("SLACK_BOT_TOKEN");
-  const response = await fetch(`https://slack.com/api/${method}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${botToken}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = (await response.json()) as SlackResponse;
-
-  if (!data.ok) {
-    throw new FatalError(
-      `Slack ${method} failed: ${data.error ?? "unknown_error"}`
-    );
-  }
-
-  return data;
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-
-  if (!value) throw new FatalError(`Missing environment variable: ${name}`);
-
-  return value;
 }

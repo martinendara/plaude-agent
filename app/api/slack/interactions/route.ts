@@ -2,10 +2,13 @@ import { resumeHook } from "workflow/api";
 import { HookNotFoundError } from "workflow/errors";
 
 import type { ApprovalHookPayload } from "@/lib/approval-types";
+import { isAuthorizedApprover, parseApproverIds } from "@/lib/approvers";
+import { callSlack } from "@/lib/slack-api";
 import { isValidSlackRequest } from "@/lib/slack-verify";
 
 type SlackInteraction = {
   type?: string;
+  channel?: { id?: string };
   user?: { id?: string; name?: string };
   actions?: Array<{ action_id?: string; value?: string }>;
 };
@@ -53,6 +56,25 @@ export async function POST(request: Request) {
     return new Response("Unsupported action", { status: 400 });
   }
 
+  const userId = payload.user?.id;
+  const approverIds = parseApproverIds(process.env.SLACK_APPROVER_IDS);
+
+  if (approverIds.length === 0) {
+    console.error(
+      "SLACK_APPROVER_IDS is missing or empty: no Slack user can approve. The approval hook was not resumed."
+    );
+  }
+
+  if (!isAuthorizedApprover(userId, approverIds)) {
+    console.warn(
+      `Rejected approval action from unauthorized Slack user ${userId ?? "unknown"}. The hook is still waiting.`
+    );
+
+    await notifyNotAuthorized({ channelId: payload.channel?.id, userId });
+
+    return Response.json({ ok: true, note: "user not authorized" });
+  }
+
   const approval: ApprovalHookPayload = {
     approved: actionId === "approve",
     approver: payload.user?.name ?? payload.user?.id ?? "unknown",
@@ -70,4 +92,24 @@ export async function POST(request: Request) {
   }
 
   return Response.json({ ok: true });
+}
+
+async function notifyNotAuthorized({
+  channelId,
+  userId,
+}: {
+  channelId: string | undefined;
+  userId: string | undefined;
+}): Promise<void> {
+  if (!channelId || !userId) return;
+
+  try {
+    await callSlack("chat.postEphemeral", {
+      channel: channelId,
+      user: userId,
+      text: "You are not an authorized approver for Acme Wallet requests. This approval is still waiting for an authorized approver.",
+    });
+  } catch (error) {
+    console.error("Could not send the not-authorized ephemeral message", error);
+  }
 }

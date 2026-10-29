@@ -155,3 +155,30 @@ Architecture decisions for the Plaude engineering challenge, in the order they w
 - One extra step and one extra suspension per run, which is negligible compared with a human decision.
 - The token is visible to members of `#approvals`; it is not a secret. Authorization is the Slack signature plus the channel's access control.
 - If a token ever collided, `getConflict()` returns the owning run and the workflow fails instead of hijacking another approval.
+
+## D10. Authorize approvers with a user-ID allowlist, and fail closed
+
+**Context.** The HMAC check in D6 proves that a request comes from Slack; it does not prove who clicked. Any member of the workspace who can see `#approvals`, including a guest or a new teammate, could press **Approve** on a refund or a reversal. In a regulated wallet, an approval has to be attributable to specific people, not to whoever happens to be in the channel.
+
+**Decision.** Read `SLACK_APPROVER_IDS`, a comma-separated list of Slack user IDs, on each click. Compare it with `payload.user.id` before calling `resumeHook`. If the clicker is not in the list:
+- do not resume the hook, so a valid approver can still decide and the approval is not wasted;
+- send the clicker an ephemeral message (`chat.postEphemeral`), visible only to them, explaining they are not authorized;
+- log the attempt with their Slack user ID.
+
+If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.error` names the variable. The system **fails closed**: no list means no approvals, never "anyone may approve". The parsing and matching live in `lib/approvers.ts` as pure functions so Stage 5 can test them without HTTP.
+
+**Alternatives considered.**
+- Trust channel membership: anyone with workspace access can be invited to `#approvals`, and membership is not an approval role. There is no per-user record to defend.
+- Slack user groups (`usergroups.users.*`): a real grouping primitive, but it needs the `usergroups:read` scope, an extra API call per click, and the group can be changed outside the repository without review.
+- Store approvers in a database or an admin UI: the right end state for roles (noted as future work in the README), but there is no database in Stage 1 and it adds infrastructure before it is needed.
+- Fail open when the list is missing: a forgotten environment variable would silently turn into "anyone can approve", which is the worst possible failure mode.
+- Check on the bot side before posting: the bot posts the message, so there is no human identity to check until someone clicks.
+
+**Consequences.**
+- A deployment without `SLACK_APPROVER_IDS` blocks every approval by design. The error log names the variable, and the README explains how to obtain Slack member IDs.
+- Slack user IDs are scoped to the workspace; moving to another workspace means updating the list.
+- `chat.postEphemeral` needs only `chat:write`, which the bot already has, so no new scope or dependency.
+- If the ephemeral message fails (for example, the bot cannot post in that channel), the attempt is still blocked and the failure is logged; the security decision never depends on the notification.
+- Slack receives `200` for an unauthorized click (a Slack ack), and the clicker sees only the ephemeral message.
+- Runtime logs last one hour on Hobby. The durable audit trail is the Stage 4 run timeline, not `console` output.
+- Stage 5 adds tests: an unauthorized user must not resume the hook, and an empty list must block every approver.
