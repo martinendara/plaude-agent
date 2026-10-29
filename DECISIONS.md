@@ -212,7 +212,7 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 
 **Context.** The rules require one free model, chosen in a single file, with no AI Gateway. The Google provider reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`. The free tier has variable latency and returns `429` under load.
 
-**Decision.** `lib/model.ts` selects `gemini-3.6-flash` through `google()` from `@ai-sdk/google@3.0.139`. The Google provider exports `google` and `createGoogleGenerativeAI` in 3.x; the `createGoogle` alias only exists in 4.x. The model factory is a step (see D11).
+**Decision.** `lib/model.ts` selected `gemini-3.6-flash` through `google()` from `@ai-sdk/google@3.0.139`. The Google provider exports `google` and `createGoogleGenerativeAI` in 3.x; the `createGoogle` alias only exists in 4.x. The model factory is a step (see D11). After the Groq comparison (D16), Gemini is the documented fallback; Groq is the primary model.
 
 **Alternatives considered.**
 - `gemini-3.8-flash` (new stable): the free-tier call measured about 71 seconds for one short sentence in this project, versus 26–33 seconds for 3.6.
@@ -294,3 +294,28 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - The payload and result shapes changed; the Stage 1 page was updated.
 - Names are display data; the ID remains the authorization and audit key.
 - Slack messages show both, so an approver can be traced without opening the app.
+
+## D16. Groq gpt-oss-120b becomes the primary model after a measured comparison
+
+**Context.** Gemini 3.6 Flash was correct but slow on the free tier: 26–33 s end to end and 27 s to the first streamed token. A chat demo needs a faster first response without adding cost or breaking the `ai@6` / provider-v3 stack required by `DurableAgent` (D11).
+
+**Test.** On 2026-10-29, the same prompt and the same tool (`reverse_transaction` with `transaction_id` and `reason`):
+- Groq `openai/gpt-oss-120b`, `reasoningEffort: "low"`: 543 ms; called the tool with `{ transaction_id: "TX-1042", reason: "Transfer went to the wrong person" }`.
+- Google `gemini-3.6-flash`: 27,147 ms; called the tool with `transaction_id: "TX-1042"` and an equivalent reason.
+- The active model list of the Groq account included both `openai/gpt-oss-120b` and `openai/gpt-oss-20b`. The 120b candidate worked, so the 20b fallback was not called.
+- The Groq free tier allows 8,000 tokens per minute; low reasoning and short prompts keep the test and the demo within it.
+
+**Decision.** `lib/model.ts` uses Groq `openai/gpt-oss-120b` with `reasoningEffort: "low"` as the primary model. Gemini 3.6 Flash remains the documented fallback behind a one-constant switch; the Google provider stays installed. `@ai-sdk/groq@3.0.79` (the `ai-v6` line) is pinned exactly. `GROQ_API_KEY` joins `.env.example`, the README and the Vercel variables.
+
+**Alternatives considered.**
+- Keep Gemini as primary: correct tool call, but 27 s is too slow for a chat demo.
+- Groq `openai/gpt-oss-20b`: lighter, but the 120b worked; keep it as the Groq fallback if the 120b is unavailable or rate-limited.
+- Raw OpenAI-compatible HTTP instead of the provider: would require reimplementing tool calling and would not be a fair comparison.
+- AI Gateway: excluded by the zero-spend rule.
+
+**Consequences.**
+- The model factory stays in one file; switching back to Gemini changes one constant and the provider options.
+- `GROQ_API_KEY` must be set in `.env.local` and in Vercel, and the deployment must be redeployed.
+- The comparison is one sample per model; latency varies with load. The gap (543 ms vs 27 s) is large enough to decide.
+- `@ai-sdk/groq@3.0.79` is compatible with provider v3 and `ai@6`; a future `ai@7` migration would need the 4.x line.
+- Reasoning effort low lowers output tokens and latency but may reduce reasoning quality; the guardrails remain in code, so the model's reasoning is not the safety boundary.

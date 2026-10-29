@@ -15,7 +15,7 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 - `app/api/slack/interactions/route.ts`: verifies Slack's HMAC signature, checks the clicker against `SLACK_APPROVER_IDS`, and resumes the hook.
 - `app/page.tsx`: **Request approval** button plus the waiting, approved, rejected, timed-out, and error states.
 - `workflows/hello.ts` and `app/api/hello/route.ts`: the original one-step smoke test.
-- `lib/model.ts`: the single place where the model is chosen (`gemini-3.6-flash` through `@ai-sdk/google`).
+- `lib/model.ts`: the single place where the model is chosen. Primary: Groq `openai/gpt-oss-120b` with low reasoning; fallback: `gemini-3.6-flash`.
 - `data/customers.json` and `lib/wallet.ts`: three mock customers with balances, limits, locks and transactions. Amounts are integer cents; state mutations are pure and idempotent.
 - `lib/policies.ts`: pure approval rules and the ownership check. The rules live in code; plain text (Stage 3) can only add reasons.
 
@@ -85,7 +85,7 @@ npx workflow inspect runs
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and fill in the values. Set the same five in the Vercel project (Settings → Environment Variables) and **redeploy**: Vercel does not inject new values into an existing deployment, so a running deployment keeps the old environment until the next one.
+Copy `.env.example` to `.env.local` and fill in the values. Set the same six in the Vercel project (Settings → Environment Variables) and **redeploy**: Vercel does not inject new values into an existing deployment, so a running deployment keeps the old environment until the next one.
 
 | Variable | Purpose |
 |---|---|
@@ -93,9 +93,10 @@ Copy `.env.example` to `.env.local` and fill in the values. Set the same five in
 | `SLACK_SIGNING_SECRET` | Verifies that requests come from Slack |
 | `SLACK_APPROVALS_CHANNEL_ID` | Channel that receives approval requests |
 | `SLACK_APPROVER_IDS` | Comma-separated Slack user IDs allowed to approve. Unset or empty means nobody can approve (fail closed) |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the Gemini Flash model |
+| `GROQ_API_KEY` | Groq API key for the primary model (free tier: 8k tokens/minute) |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the Gemini fallback |
 
-The Google key is read by `@ai-sdk/google` from `GOOGLE_GENERATIVE_AI_API_KEY`. On the free tier, a short direct call to `gemini-3.6-flash` measured 26–33 s end to end and 27 s to the first streamed token; a full DurableAgent workflow measured about 54 s. `gemini-3.5-flash-lite` measured about 18 s. The tier can also return `429` under load; the app catches it and answers with a friendly message instead of a raw error.
+The primary model is Groq `openai/gpt-oss-120b` with reasoning effort low. On the same tool-call prompt it measured 543 ms and called `reverse_transaction` with the right arguments; `gemini-3.6-flash` measured 27.1 s on the same test and remains the fallback. The Groq free tier allows 8,000 tokens per minute, so keep prompts short and reasoning low. Gemini's free tier can return `429` under load; the app catches it and answers with a friendly message instead of a raw error.
 
 To get a member ID, open the person's profile in Slack and choose **More → Copy member ID**. Example: `SLACK_APPROVER_IDS=U012AB3CDEF,U045GH6IJKL`.
 
@@ -124,6 +125,6 @@ Next steps: the tool layer and conversation workflow, the minimal chat UI, then 
 
 ## Notes
 
-- Mock data only. Prompts go to the Google AI Studio free tier, which may use them to improve its products — never put real customer data in.
-- The free tier has variable latency and rate limits. `lib/model.ts` is the only place to change the model; swapping providers is one line.
+- Mock data only. Prompts go to Groq and, when the fallback is used, Google AI Studio free tiers, which may use them to improve their products — never put real customer data in.
+- The free tiers have variable latency and rate limits. `lib/model.ts` is the only place to change the model; switching between Groq and Gemini is one constant.
 - The brief asks for `DurableAgent`; Vercel's newer `WorkflowAgent` (`@ai-sdk/workflow`) is a possible future migration, recorded in [DECISIONS.md](./DECISIONS.md).
