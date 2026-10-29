@@ -305,7 +305,7 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - The active model list of the Groq account included both `openai/gpt-oss-120b` and `openai/gpt-oss-20b`. The 120b candidate worked, so the 20b fallback was not called.
 - The Groq free tier allows 8,000 tokens per minute; low reasoning and short prompts keep the test and the demo within it.
 
-**Decision.** `lib/model.ts` uses Groq `openai/gpt-oss-120b` with `reasoningEffort: "low"` as the primary model. Gemini 3.6 Flash remains the documented fallback behind a one-constant switch; the Google provider stays installed. `@ai-sdk/groq@3.0.79` (the `ai-v6` line) is pinned exactly. `GROQ_API_KEY` joins `.env.example`, the README and the Vercel variables.
+**Decision.** `lib/model.ts` uses Groq `openai/gpt-oss-120b` with `reasoningEffort: "low"` as the primary model. Gemini 3.6 Flash remains the documented **manual** fallback behind a one-constant switch (no automatic failover); the Google provider stays installed. `@ai-sdk/groq@3.0.79` (the `ai-v6` line) is pinned exactly. `GROQ_API_KEY` joins `.env.example`, the README and the Vercel variables.
 
 **Alternatives considered.**
 - Keep Gemini as primary: correct tool call, but 27 s is too slow for a chat demo.
@@ -319,3 +319,64 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - The comparison is one sample per model; latency varies with load. The gap (543 ms vs 27 s) is large enough to decide.
 - `@ai-sdk/groq@3.0.79` is compatible with provider v3 and `ai@6`; a future `ai@7` migration would need the 4.x line.
 - Reasoning effort low lowers output tokens and latency but may reduce reasoning quality; the guardrails remain in code, so the model's reasoning is not the safety boundary.
+- Groq's API policy says Groq does not train on API data. Gemini's free tier may use prompts to improve its products, but only if an operator enables the manual fallback.
+
+## D17. Tools trust the wallet, not the model
+
+**Context.** A model can invent IDs, amounts, recipient status or lock reasons, and customer text can try to talk it into bypassing a rule. Guardrails are only as strong as the data they evaluate.
+
+**Decision.**
+- The five tools are `lookup_account`, `refund_fee`, `reverse_transaction`, `raise_limit` and `unlock_account`. None accepts a customer ID.
+- `refund_fee` and `reverse_transaction` accept only `transaction_id` and the customer's `reason`; `raise_limit` accepts the new limit; `unlock_account` accepts the reason. Amounts, `recipientReceived`, `lockReason` and the current limit are read from the wallet before `evaluateGuardrails`.
+- Ownership is checked before any approval. A transaction that belongs to another customer returns `refused`; it never creates a hook or posts to Slack.
+- Write actions run through one serialized action queue per conversation, inside memoized steps, so concurrent tool calls cannot overwrite each other and replay does not apply an action twice. Reducers are idempotent by transaction state.
+- Slack messages are assembled from code data (customer, amount, rule). Customer-provided text is escaped and labeled `Customer says:` before it enters mrkdwn.
+- The temporary instructions require the model to report `completed`, `rejected`, `timed_out` and `refused` honestly; the code, not the model, decides.
+
+**Alternatives considered.**
+- Trust model-supplied amounts and statuses: a prompt could inflate or deflate the facts the policy evaluates.
+- Per-tool approval code: duplication and drift.
+- Optimistic writes: lost updates when two tools run concurrently.
+- Prompt-only ownership: a social-engineering message could convince the model to act.
+- Raw customer text in Slack: formatting and mention injection.
+
+**Consequences.**
+- A wrong model cannot loosen a code rule; the tool result, not the model, is the source of truth.
+- The tool schemas are narrower, so the model must look up facts first.
+- One action runs at a time per conversation; a pending approval holds later actions in the queue.
+- An approver sees code-built facts and a clearly labeled customer quote.
+
+## D18. One workflow per conversation, and the chat API cannot resume approvals
+
+**Context.** The chat needs history and mock account state across turns without a database. Approval hooks must remain reachable only through the signed Slack endpoint.
+
+**Decision.** One workflow run owns a conversation. A chat hook with `token = runId` receives each user message; the first message is passed as a workflow argument and runs the first turn. The workflow keeps the model messages and the wallet state in local variables and streams each turn with `preventClose: true, sendFinish: true`; the API slices the durable stream at each turn's `finish`. `POST /api/chat` starts a run when there is no `runId` and resumes the chat hook when there is one. `customerId` is accepted only at start and ignored afterwards. The route calls only `chatMessageHook.resume`; it never calls `resumeHook` or an approval hook. Approval hooks remain exclusive to `/api/slack/interactions`. `/done` ends the conversation; `maxTurns` bounds a run.
+
+**Alternatives considered.**
+- One run per turn: needs an external store for wallet state and loses cross-turn balances.
+- Client-held state: untrusted and tamperable.
+- Resuming approvals from the chat route: a compromised client could approve money movements.
+- A database: new infrastructure for a mock demo.
+
+**Consequences.**
+- State is durable within a conversation and resets when a new one starts.
+- Waiting uses no compute; the run stays open while the human decides.
+- The UI must send `runId` on every follow-up.
+- There is no GET stream reconnect route. A stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
+- `/api/chat` has no user authentication yet; the demo exposes the run ID.
+
+## D19. Rate limits become a friendly message, not a blank stream
+
+**Context.** Groq's and Gemini's free tiers return `429` under load. A raw provider error would end the turn and could leave the UI stream without a `finish` chunk.
+
+**Decision.** The chat workflow wraps each agent turn in `try/catch`. `isRateLimitError` recognizes `APICallError` status 429 and common provider shapes. On failure the workflow writes a friendly text plus `finish` chunk to the durable stream through a step, appends the same text to the model history, and keeps the conversation alive. Other failures get a generic "something went wrong" message.
+
+**Alternatives considered.**
+- Retry inside the agent: a limited free tier may stay limited and consume the minute's tokens.
+- Surface the provider error: bad UX and leaks implementation detail.
+- Let the run fail: the UI would show a blank or stuck turn.
+
+**Consequences.**
+- The user sees a normal assistant message and can try again.
+- The error is logged for the operator.
+- The fallback is exercised on a real 429; four short messages in the Tramo 3 test did not trigger one.

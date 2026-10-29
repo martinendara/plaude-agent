@@ -2,20 +2,22 @@
 
 Customer support agent for Acme Wallet (a mock digital wallet), built for the Plaude engineering challenge.
 
-**Current stage:** Stage 2 in progress — the agent foundations plus a reusable approval helper. The tools and the chat UI come in the next checkpoints.
+**Current stage:** Stage 2 in progress — the agent tools and the multi-turn chat API are built. The minimal chat UI comes next.
 
 ## What exists now
 
 - Next.js 16 (App Router, TypeScript strict, Tailwind CSS 4) in `app/`.
 - Workflow DevKit configured with `withWorkflow()` in `next.config.ts`.
 - `workflows/approval.ts`: a durable workflow that posts a fixed approval request to `#approvals`, waits on a hook, and updates the Slack message with the decision.
-- `workflows/approval-request.ts`: one workflow-level helper that creates the hook with a random token, posts to Slack, waits with a timeout, and returns the decision. It is the single path Stage 2 tools will reuse.
+- `workflows/approval-request.ts`: one workflow-level helper that creates the hook with a random token, posts to Slack, waits with a timeout, and returns the decision. The tools reuse it.
+- `workflows/chat.ts` and `workflows/agent-tools.ts`: a multi-turn `DurableAgent` conversation with five tools, serialized writes and wallet-owned facts.
+- `app/api/chat/route.ts`: starts a conversation or resumes one with a follow-up message, and returns the per-turn UI stream.
 - `app/api/approval/route.ts`: starts a run and returns its `runId` immediately.
 - `app/api/approval/[runId]/route.ts`: returns the run status and result for polling.
 - `app/api/slack/interactions/route.ts`: verifies Slack's HMAC signature, checks the clicker against `SLACK_APPROVER_IDS`, and resumes the hook.
 - `app/page.tsx`: **Request approval** button plus the waiting, approved, rejected, timed-out, and error states.
 - `workflows/hello.ts` and `app/api/hello/route.ts`: the original one-step smoke test.
-- `lib/model.ts`: the single place where the model is chosen. Primary: Groq `openai/gpt-oss-120b` with low reasoning; fallback: `gemini-3.6-flash`.
+- `lib/model.ts`: the single place where the model is chosen. Primary: Groq `openai/gpt-oss-120b` with low reasoning; manual fallback: `gemini-3.6-flash`.
 - `data/customers.json` and `lib/wallet.ts`: three mock customers with balances, limits, locks and transactions. Amounts are integer cents; state mutations are pure and idempotent.
 - `lib/policies.ts`: pure approval rules and the ownership check. The rules live in code; plain text (Stage 3) can only add reasons.
 
@@ -31,6 +33,18 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 
 A request older than 5 minutes, or one with an invalid signature, is rejected with `401`. If nobody decides in time, the workflow ends as `timed_out`, the Slack message says so, and the hook is disposed so a late click cannot resume it. The timeout is `APPROVAL_TIMEOUT_MS` in `lib/approval-config.ts`.
 
+## How the chat works
+
+- `POST /api/chat` starts a conversation with `{ customerId, messages }` and returns a UI message stream plus `x-workflow-run-id`. Follow-ups send `{ runId, messages }`.
+- One workflow owns the conversation: a chat hook with `token = runId` receives each message, and the workflow keeps the model history and the mock wallet state across turns.
+- `DurableAgent` runs five tools: `lookup_account`, `refund_fee`, `reverse_transaction`, `raise_limit` and `unlock_account`. Tools receive IDs (and the new limit); amounts, recipient status, lock reason and the current limit come from the wallet.
+- Ownership is a hard block: a transaction from another customer returns `refused`, never reaches Slack, and no approver can allow it. Write actions are serialized per conversation and applied in memoized steps.
+- The Slack approval message is built from code data. Customer-provided text is escaped and labeled `Customer says:`.
+- `/api/chat` only resumes the chat-message hook. Approval hooks are resumed only by the signed Slack endpoint.
+- `customerId` is accepted only when a conversation starts; follow-ups ignore it.
+- A `429` is caught and written to the stream as a friendly assistant message.
+- Send `/done` to end a conversation. There is no GET reconnection route: a stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
+
 ## Mock wallet and approval rules
 
 `data/customers.json` has three customers:
@@ -41,7 +55,7 @@ A request older than 5 minutes, or one with an invalid signature, is rejected wi
 | Bruno Silva | `lost_card` lock (unlock allowed); limit USD 1,000 |
 | Diego Torres | Ana's husband, own account; Ana's transactions are foreign to him |
 
-Amounts are stored as integer cents. `lib/wallet.ts` finds accounts and transactions and applies pure, idempotent mutations: a second refund or reversal is refused. `lib/policies.ts` decides approval in code (never in a prompt):
+Amounts are stored as integer cents. `lib/wallet.ts` finds accounts and transactions and applies pure, idempotent mutations: a second refund or reversal is refused. The tools read amounts, recipient status, lock reason and the current limit from the wallet before evaluating rules; the model cannot send those facts. `lib/policies.ts` decides approval in code (never in a prompt):
 
 - fee refund above USD 20;
 - reversal above USD 100, or when the recipient already received the funds;
@@ -96,7 +110,7 @@ Copy `.env.example` to `.env.local` and fill in the values. Set the same six in 
 | `GROQ_API_KEY` | Groq API key for the primary model (free tier: 8k tokens/minute) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the Gemini fallback |
 
-The primary model is Groq `openai/gpt-oss-120b` with reasoning effort low. On the same tool-call prompt it measured 543 ms and called `reverse_transaction` with the right arguments; `gemini-3.6-flash` measured 27.1 s on the same test and remains the fallback. The Groq free tier allows 8,000 tokens per minute, so keep prompts short and reasoning low. Gemini's free tier can return `429` under load; the app catches it and answers with a friendly message instead of a raw error.
+The primary model is Groq `openai/gpt-oss-120b` with reasoning effort low. On the same tool-call prompt it measured 543 ms and called `reverse_transaction` with the right arguments; `gemini-3.6-flash` measured 27.1 s on the same test and remains the **manual** fallback: an operator changes `PROVIDER` in `lib/model.ts`; there is no automatic failover. The Groq free tier allows 8,000 tokens per minute, so keep prompts short and reasoning low. Rate limits are caught and shown as a friendly message instead of a raw error.
 
 To get a member ID, open the person's profile in Slack and choose **More → Copy member ID**. Example: `SLACK_APPROVER_IDS=U012AB3CDEF,U045GH6IJKL`.
 
@@ -121,10 +135,10 @@ DECISIONS.md         Architecture decisions, one entry per choice
 CLAUDE.md            Project instructions for the coding agent
 ```
 
-Next steps: the tool layer and conversation workflow, the minimal chat UI, then `instructions/` (Stage 3) and the designed UI with the operator timeline (Stage 4). Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
+Next steps: the minimal chat UI, then `instructions/` (Stage 3) and the designed UI with the operator timeline (Stage 4). As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
 
 ## Notes
 
-- Mock data only. Prompts go to Groq and, when the fallback is used, Google AI Studio free tiers, which may use them to improve their products — never put real customer data in.
-- The free tiers have variable latency and rate limits. `lib/model.ts` is the only place to change the model; switching between Groq and Gemini is one constant.
+- Mock data only. According to Groq's API policy, Groq does not train on API data. If the manual fallback is switched to Gemini, Google AI Studio's free tier may use prompts to improve its products. Never put real customer data in.
+- The free tiers have variable latency and rate limits. `lib/model.ts` is the only place to change the model; switching between Groq and Gemini is one constant. Gemini is a manual standby, not an automatic failover.
 - The brief asks for `DurableAgent`; Vercel's newer `WorkflowAgent` (`@ai-sdk/workflow`) is a possible future migration, recorded in [DECISIONS.md](./DECISIONS.md).
