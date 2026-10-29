@@ -1,0 +1,103 @@
+{
+  "customers": [
+    {
+      "id": "cus_ana",
+      "name": "Ana Torres",
+      "balanceCents": 125050,
+      "dailyLimitCents": 50000,
+      "lock": { "locked": true, "reason": "suspected_fraud" },
+      "transactions": [
+        {
+          "id": "TX-1041",
+          "type": "fee",
+          "amountCents": 1200,
+          "status": "completed",
+          "description": "Monthly account fee",
+          "feeRefunded": false
+        },
+        {
+          "id": "TX-1042",
+          "type": "transfer",
+          "amountCents": 25000,
+          "status": "completed",
+          "description": "Transfer to Marco Ruiz",
+          "recipientReceived": false
+        },
+        {
+          "id": "TX-1043",
+          "type": "fee",
+          "amountCents": 4500,
+          "status": "completed",
+          "description": "International transfer fee",
+          "feeRefunded": false
+        },
+        {
+          "id": "TX-1044",
+          "type": "transfer",
+          "amountCents": 6000,
+          "status": "completed",
+          "description": "Transfer to Lucía Pérez",
+          "recipientReceived": true
+        },
+        {
+          "id": "TX-1045",
+          "type": "transfer",
+          "amountCents": 8000,
+          "status": "completed",
+          "description": "Transfer to Diego Torres",
+          "recipientReceived": false
+        }
+      ]
+    },
+    {
+      "id": "cus_bruno",
+      "name": "Bruno Silva",
+      "balanceCents": 84000,
+      "dailyLimitCents": 100000,
+      "lock": { "locked": true, "reason": "lost_card" },
+      "transactions": [
+        {
+          "id": "TX-2001",
+          "type": "fee",
+          "amountCents": 1000,
+          "status": "completed",
+          "description": "Card replacement fee",
+          "feeRefunded": false
+        },
+        {
+          "id": "TX-2002",
+          "type": "transfer",
+          "amountCents": 4000,
+          "status": "completed",
+          "description": "Transfer to Sofia Lima",
+          "recipientReceived": false
+        }
+      ]
+    },
+    {
+      "id": "cus_diego",
+      "name": "Diego Torres",
+      "balanceCents": 30000,
+      "dailyLimitCents": 30000,
+      "lock": { "locked": false, "reason": null },
+      "transactions": [
+        {
+          "id": "TX-3001",
+          "type": "fee",
+          "amountCents": 1500,
+          "status": "completed",
+          "description": "Monthly account fee",
+          "feeRefunded": false
+        },
+        {
+          "id": "TX-3002",
+          "type": "transfer",
+          "amountCents": 12000,
+          "status": "completed",
+          "description": "Transfer to Ana Torres",
+          "recipientReceived": false
+        }
+      ]
+    }
+  ]
+}

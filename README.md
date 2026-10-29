@@ -2,7 +2,7 @@
 
 Customer support agent for Acme Wallet (a mock digital wallet), built for the Plaude engineering challenge.
 
-**Current stage:** Stage 1 — a durable Slack approval flow, still without AI.
+**Current stage:** Stage 2 in progress — the agent foundations: model, mock wallet data and code guardrails. The tools and the chat UI come in the next checkpoints.
 
 ## What exists now
 
@@ -14,6 +14,9 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 - `app/api/slack/interactions/route.ts`: verifies Slack's HMAC signature, checks the clicker against `SLACK_APPROVER_IDS`, and resumes the hook.
 - `app/page.tsx`: **Request approval** button plus the waiting, approved, rejected, timed-out, and error states.
 - `workflows/hello.ts` and `app/api/hello/route.ts`: the original one-step smoke test.
+- `lib/model.ts`: the single place where the model is chosen (`gemini-3.6-flash` through `@ai-sdk/google`).
+- `data/customers.json` and `lib/wallet.ts`: three mock customers with balances, limits, locks and transactions. Amounts are integer cents; state mutations are pure and idempotent.
+- `lib/policies.ts`: pure approval rules and the ownership check. The rules live in code; plain text (Stage 3) can only add reasons.
 
 ## How the approval flow works
 
@@ -26,6 +29,25 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 7. The page polls `GET /api/approval/[runId]` every 3 seconds and shows the outcome.
 
 A request older than 5 minutes, or one with an invalid signature, is rejected with `401`. If nobody decides in time, the workflow ends as `timed_out` and the Slack message says so. The timeout is `APPROVAL_TIMEOUT_MS` in `lib/approval-config.ts`.
+
+## Mock wallet and approval rules
+
+`data/customers.json` has three customers:
+
+| Customer | Cases |
+|---|---|
+| Ana Torres | `suspected_fraud` lock; fees of USD 12 and USD 45; transfers of USD 250 (not received), USD 60 (already received) and USD 80 (not received) |
+| Bruno Silva | `lost_card` lock (unlock allowed); limit USD 1,000 |
+| Diego Torres | Ana's husband, own account; Ana's transactions are foreign to him |
+
+Amounts are stored as integer cents. `lib/wallet.ts` finds accounts and transactions and applies pure, idempotent mutations: a second refund or reversal is refused. `lib/policies.ts` decides approval in code (never in a prompt):
+
+- fee refund above USD 20;
+- reversal above USD 100, or when the recipient already received the funds;
+- new limit above 2x the current limit;
+- unlock when the lock reason is suspected fraud.
+
+Any action on an account or transaction that does not belong to the session customer is a hard block: it never reaches Slack and no approver can allow it. `extraRules` is the Stage 3 extension point: text rules can add reasons, never remove the code rules.
 
 ## Run locally
 
@@ -60,7 +82,7 @@ npx workflow inspect runs
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and fill in the values. Set the same four in the Vercel project (Settings → Environment Variables) and **redeploy**: Vercel does not inject new values into an existing deployment, so a running deployment keeps the old environment until the next one.
+Copy `.env.example` to `.env.local` and fill in the values. Set the same five in the Vercel project (Settings → Environment Variables) and **redeploy**: Vercel does not inject new values into an existing deployment, so a running deployment keeps the old environment until the next one.
 
 | Variable | Purpose |
 |---|---|
@@ -68,6 +90,9 @@ Copy `.env.example` to `.env.local` and fill in the values. Set the same four in
 | `SLACK_SIGNING_SECRET` | Verifies that requests come from Slack |
 | `SLACK_APPROVALS_CHANNEL_ID` | Channel that receives approval requests |
 | `SLACK_APPROVER_IDS` | Comma-separated Slack user IDs allowed to approve. Unset or empty means nobody can approve (fail closed) |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the Gemini Flash model |
+
+The Google key is read by `@ai-sdk/google` from `GOOGLE_GENERATIVE_AI_API_KEY`. The free tier is slow at times: measured time to first token was 15–27 seconds, and it can return `429` under load. The app catches `429` and answers with a friendly message instead of a raw error.
 
 To get a member ID, open the person's profile in Slack and choose **More → Copy member ID**. Example: `SLACK_APPROVER_IDS=U012AB3CDEF,U045GH6IJKL`.
 
@@ -85,15 +110,17 @@ To get a member ID, open the person's profile in Slack and choose **More → Cop
 
 ```
 app/                 Pages and Route Handlers
-lib/                 Shared types, Block Kit builders, signature verification
+data/                Mock wallet customers and transactions
+lib/                 Model, wallet, policies, money, Slack helpers and types
 workflows/           Workflow functions and their steps
 DECISIONS.md         Architecture decisions, one entry per choice
 CLAUDE.md            Project instructions for the coding agent
 ```
 
-Later stages add `instructions/` (plain-text agent instructions) and `data/` (mock wallet data).
+Next steps: the tool layer and conversation workflow, the minimal chat UI, then `instructions/` (Stage 3) and the designed UI with the operator timeline (Stage 4). Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
 
 ## Notes
 
-- Mock data only. When Gemini is wired, prompts go to the Google AI Studio free tier, which may use them to improve its products — never put real customer data in.
+- Mock data only. Prompts go to the Google AI Studio free tier, which may use them to improve its products — never put real customer data in.
+- The free tier has variable latency and rate limits. `lib/model.ts` is the only place to change the model; swapping providers is one line.
 - The brief asks for `DurableAgent`; Vercel's newer `WorkflowAgent` (`@ai-sdk/workflow`) is a possible future migration, recorded in [DECISIONS.md](./DECISIONS.md).

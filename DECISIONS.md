@@ -182,3 +182,72 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - Slack receives `200` for an unauthorized click (a Slack ack), and the clicker sees only the ephemeral message.
 - Runtime logs last one hour on Hobby. The durable audit trail is the Stage 4 run timeline, not `console` output.
 - Stage 5 adds tests: an unauthorized user must not resume the hook, and an empty list must block every approver.
+
+## D11. Pin the AI SDK stack to the `ai@6` line that `DurableAgent` requires
+
+**Context.** The brief requires `DurableAgent`. It is not part of `workflow@5.2.3`; it lives in the separate `@workflow/ai` package, which the Workflow docs mark as deprecated in favor of `WorkflowAgent`. `@workflow/ai@5.0.3` peers on `ai@^6` and depends on `@ai-sdk/provider@^3`, while the current `ai@7` and `@ai-sdk/google@4.x` use provider v4. The two lines cannot be mixed.
+
+**Decision.** Install exact versions: `@workflow/ai@5.0.3`, `ai@6.0.317`, `@ai-sdk/google@3.0.139`, `@ai-sdk/react@3.0.320`, and declare `zod@4.6.7` (already in the tree). The model factory in `lib/model.ts` is marked `"use step"`: `DurableAgent` passes it into `doStreamStep` (a step), and a plain function fails step-argument serialization. A real spike confirmed the failure (“Cannot stringify a function”) and the fix.
+
+**What each package does and what it weighs.**
+- `@workflow/ai` (server only, used in `workflows/` and `lib/model.ts`): provides `DurableAgent` and the chat transport. It brings a nested copy of zod.
+- `ai` (server only): required peer; types, `APICallError`, UI message chunks. About 8 MB unpacked.
+- `@ai-sdk/google` (server only): Gemini provider, about 2.4 MB unpacked.
+- `@ai-sdk/react` (client only, one page in Stage 2): `useChat`; adds `swr` and `throttleit`.
+- `zod` (both): tool input schemas; already installed transitively, so declaring it adds no download.
+
+**Alternatives considered.**
+- `WorkflowAgent` from `@ai-sdk/workflow` with `ai@7`: the newer, supported path, but the brief explicitly asks for `DurableAgent`.
+- Vercel AI Gateway: the string model form would be one line, but the rules forbid it and its free tier does not include Gemini.
+- Unpinned `^` ranges: npm would resolve `ai@7` and break the agent silently on the next install.
+
+**Consequences.**
+- We are deliberately on a deprecated agent API. Migrating to `WorkflowAgent` later means changing the agent import, the model factory and the stream format; it stays as future work in the README.
+- Exact pins make installs reproducible but require a manual upgrade.
+- `npm audit` reports 24 high-severity advisories in the dependency tree. They need a review; `npm audit fix --force` is not used because it can change majors and break the pinned stack.
+- No package from this list is imported into a client component except `@ai-sdk/react` in the future chat page.
+- The `"use step"` factory leaks a Workflow-specific detail into the model file. It is documented there so a provider swap remains a one-line change.
+
+## D12. Gemini 3.6 Flash through the Google AI Studio free tier
+
+**Context.** The rules require one free model, chosen in a single file, with no AI Gateway. The Google provider reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`. The free tier has variable latency and returns `429` under load.
+
+**Decision.** `lib/model.ts` selects `gemini-3.6-flash` through `google()` from `@ai-sdk/google@3.0.139`. The Google provider exports `google` and `createGoogleGenerativeAI` in 3.x; the `createGoogle` alias only exists in 4.x. The model factory is a step (see D11).
+
+**Alternatives considered.**
+- `gemini-3.8-flash` (new stable): the free-tier call measured about 71 seconds for one short sentence in this project, versus 26–32 seconds for 3.6.
+- `gemini-3.5-flash-lite`: faster (about 18 seconds) but a lighter model; kept as a one-line fallback.
+- `gemini-2.5-flash`: free but access-limited to projects that used it in the past; not safe for a new demo.
+- `gemini-flash-latest`: a hot-swapped alias, not reproducible.
+- AI Gateway or a paid model: excluded by the zero-spend rule.
+
+**Consequences.**
+- Free-tier latency is visible: measured time to first token was 15–27 seconds, and it varies by load and project quota. The UI will stream tokens, but the first token can still take that long.
+- Google may use free-tier prompts to improve its products; only mock data goes in.
+- `thinkingLevel: "minimal"` is rejected by `gemini-3.6-flash`-era models with a 400 error, so no thinking override is sent. Lower levels did not improve latency in the measurements.
+- A `429` is handled with a friendly message; the exact error is `APICallError` with `statusCode: 429`.
+- Swapping model or provider stays a one-line change in `lib/model.ts`.
+
+## D13. Mock wallet in integer cents, with pure policy rules and an OR-only extension point
+
+**Context.** The guardrails cannot live in a prompt: a user or a later text instruction could talk the model out of them. Ownership is a hard block, not an approval. The demo has no database, and money must not be compared with floating point.
+
+**Decision.**
+- `data/customers.json` holds three mock customers that cover every rule: Ana (fraud lock; small and large fee refunds; reversal above the limit, reversal to a paid recipient, reversal below the limit; limit above 2x), Bruno (non-fraud lock; limit increase within 2x) and Diego (Ana's husband, whose own account cannot operate on Ana's transactions).
+- Amounts are integer cents. `lib/money.ts` formats them as USD and converts tool input from dollars.
+- `lib/wallet.ts` finds accounts and transactions and applies pure, idempotent reducers. A second refund or reversal is refused by transaction state, not by hoping the model does not retry.
+- `lib/policies.ts` evaluates code rules and returns human-readable reasons. `extraRules` is the Stage 3 extension point: extra rules are combined with OR and can only add reasons. Built-in rules are always evaluated, so text cannot remove them.
+- `checkOwnership` is separate from approval. An action on another customer's transaction is refused before any hook is created.
+
+**Alternatives considered.**
+- Rules in the system prompt: cheapest to write, but a prompt is advisory and cannot be defended as a hard guardrail.
+- A database or KV store: the right home for real balances, but new infrastructure and setup for a mock demo.
+- Floating-point dollars: simpler, but rounding makes thresholds unreliable.
+- Rules inside each tool: fewer files, but harder to test in isolation and easier to duplicate.
+- Four mock customers: the three above already cover every rule and the foreign-account case.
+
+**Consequences.**
+- The policy module is pure and can be tested without HTTP, Slack or a model. This checkpoint ran 20 checks covering both sides of every threshold, the extra-rule behavior and the reducer idempotency.
+- Mock state lives in memory for now. In Stage 2 it will live inside the conversation workflow; a new conversation starts from the JSON. Real balances need a database later.
+- Extra rules cannot clear a code reason; that invariant is encoded in the return shape and will be tested in Stage 5.
+- The mock is data, not a simulation: no external money moves.
