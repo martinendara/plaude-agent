@@ -2,13 +2,14 @@
 
 Customer support agent for Acme Wallet (a mock digital wallet), built for the Plaude engineering challenge.
 
-**Current stage:** Stage 2 in progress — the agent foundations: model, mock wallet data and code guardrails. The tools and the chat UI come in the next checkpoints.
+**Current stage:** Stage 2 in progress — the agent foundations plus a reusable approval helper. The tools and the chat UI come in the next checkpoints.
 
 ## What exists now
 
 - Next.js 16 (App Router, TypeScript strict, Tailwind CSS 4) in `app/`.
 - Workflow DevKit configured with `withWorkflow()` in `next.config.ts`.
 - `workflows/approval.ts`: a durable workflow that posts a fixed approval request to `#approvals`, waits on a hook, and updates the Slack message with the decision.
+- `workflows/approval-request.ts`: one workflow-level helper that creates the hook with a random token, posts to Slack, waits with a timeout, and returns the decision. It is the single path Stage 2 tools will reuse.
 - `app/api/approval/route.ts`: starts a run and returns its `runId` immediately.
 - `app/api/approval/[runId]/route.ts`: returns the run status and result for polling.
 - `app/api/slack/interactions/route.ts`: verifies Slack's HMAC signature, checks the clicker against `SLACK_APPROVER_IDS`, and resumes the hook.
@@ -24,11 +25,11 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 2. The route starts `approvalWorkflow` and returns `{ runId }` without waiting.
 3. A step generates an unguessable hook token; the workflow registers the hook, then posts a Block Kit message with **Approve** and **Reject** buttons to `#approvals`.
 4. The workflow suspends on the hook for up to 10 minutes. No compute is used while it waits.
-5. A click reaches `POST /api/slack/interactions`. The route verifies the signature, then checks the clicker's Slack user ID against `SLACK_APPROVER_IDS`. An authorized user resumes the hook with `{ approved, approver, decidedAt }`. Anyone else gets an ephemeral message only they can see, the attempt is logged with their user ID, and the hook keeps waiting for an authorized approver. If the variable is unset or empty, nobody can approve (fail closed) and the log names the variable.
-6. The workflow updates the Slack message with who decided and when, and removes the buttons. A second click is acknowledged but does nothing.
+5. A click reaches `POST /api/slack/interactions`. The route verifies the signature, then checks the clicker's Slack user ID against `SLACK_APPROVER_IDS`. An authorized user resumes the hook with `{ approved, approver: { id, name }, decidedAt }`. Anyone else gets an ephemeral message only they can see, the attempt is logged with their user ID, and the hook keeps waiting for an authorized approver. If the variable is unset or empty, nobody can approve (fail closed) and the log names the variable.
+6. The workflow updates the Slack message with who decided (name and Slack ID) and when, and removes the buttons. The hook payload and the run result store both. A second click is acknowledged but does nothing.
 7. The page polls `GET /api/approval/[runId]` every 3 seconds and shows the outcome.
 
-A request older than 5 minutes, or one with an invalid signature, is rejected with `401`. If nobody decides in time, the workflow ends as `timed_out` and the Slack message says so. The timeout is `APPROVAL_TIMEOUT_MS` in `lib/approval-config.ts`.
+A request older than 5 minutes, or one with an invalid signature, is rejected with `401`. If nobody decides in time, the workflow ends as `timed_out`, the Slack message says so, and the hook is disposed so a late click cannot resume it. The timeout is `APPROVAL_TIMEOUT_MS` in `lib/approval-config.ts`.
 
 ## Mock wallet and approval rules
 
@@ -46,6 +47,8 @@ Amounts are stored as integer cents. `lib/wallet.ts` finds accounts and transact
 - reversal above USD 100, or when the recipient already received the funds;
 - new limit above 2x the current limit;
 - unlock when the lock reason is suspected fraud.
+
+`raise_limit` also rejects non-positive limits and limits that do not exceed the current one, with a clear `WalletError`.
 
 Any action on an account or transaction that does not belong to the session customer is a hard block: it never reaches Slack and no approver can allow it. `extraRules` is the Stage 3 extension point: text rules can add reasons, never remove the code rules.
 
@@ -92,7 +95,7 @@ Copy `.env.example` to `.env.local` and fill in the values. Set the same five in
 | `SLACK_APPROVER_IDS` | Comma-separated Slack user IDs allowed to approve. Unset or empty means nobody can approve (fail closed) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the Gemini Flash model |
 
-The Google key is read by `@ai-sdk/google` from `GOOGLE_GENERATIVE_AI_API_KEY`. The free tier is slow at times: measured time to first token was 15–27 seconds, and it can return `429` under load. The app catches `429` and answers with a friendly message instead of a raw error.
+The Google key is read by `@ai-sdk/google` from `GOOGLE_GENERATIVE_AI_API_KEY`. On the free tier, a short direct call to `gemini-3.6-flash` measured 26–33 s end to end and 27 s to the first streamed token; a full DurableAgent workflow measured about 54 s. `gemini-3.5-flash-lite` measured about 18 s. The tier can also return `429` under load; the app catches it and answers with a friendly message instead of a raw error.
 
 To get a member ID, open the person's profile in Slack and choose **More → Copy member ID**. Example: `SLACK_APPROVER_IDS=U012AB3CDEF,U045GH6IJKL`.
 

@@ -77,7 +77,10 @@ export async function POST(request: Request) {
 
   const approval: ApprovalHookPayload = {
     approved: actionId === "approve",
-    approver: payload.user?.name ?? payload.user?.id ?? "unknown",
+    approver: {
+      id: userId ?? "unknown",
+      name: payload.user?.name ?? userId ?? "unknown",
+    },
     decidedAt: new Date().toISOString(),
   };
 

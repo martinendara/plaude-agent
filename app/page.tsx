@@ -198,7 +198,7 @@ function Decision({ decision }: { decision: ApprovalDecision }) {
             : "font-medium text-red-600 dark:text-red-400"
         }
       >
-        {approved ? "Approved" : "Rejected"} by @{decision.approver}
+        {approved ? "Approved" : "Rejected"} by @{decision.approver.name}
       </p>
       <p className="mt-2 leading-6 text-zinc-600 dark:text-zinc-400">
         Decided at {formatUtc(decision.decidedAt)}.

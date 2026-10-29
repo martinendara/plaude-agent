@@ -45,7 +45,9 @@ export type WalletErrorCode =
   | "transaction_not_found"
   | "already_done"
   | "amount_mismatch"
-  | "already_unlocked";
+  | "already_unlocked"
+  | "invalid_limit"
+  | "limit_not_increased";
 
 export class WalletError extends Error {
   constructor(readonly code: WalletErrorCode) {
@@ -131,6 +133,14 @@ export function applyMutation(
     }
 
     case "raise_limit": {
+      if (mutation.newDailyLimitCents <= 0) {
+        throw new WalletError("invalid_limit");
+      }
+
+      if (mutation.newDailyLimitCents <= account.dailyLimitCents) {
+        throw new WalletError("limit_not_increased");
+      }
+
       account.dailyLimitCents = mutation.newDailyLimitCents;
       return next;
     }

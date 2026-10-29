@@ -215,14 +215,14 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 **Decision.** `lib/model.ts` selects `gemini-3.6-flash` through `google()` from `@ai-sdk/google@3.0.139`. The Google provider exports `google` and `createGoogleGenerativeAI` in 3.x; the `createGoogle` alias only exists in 4.x. The model factory is a step (see D11).
 
 **Alternatives considered.**
-- `gemini-3.8-flash` (new stable): the free-tier call measured about 71 seconds for one short sentence in this project, versus 26–32 seconds for 3.6.
+- `gemini-3.8-flash` (new stable): the free-tier call measured about 71 seconds for one short sentence in this project, versus 26–33 seconds for 3.6.
 - `gemini-3.5-flash-lite`: faster (about 18 seconds) but a lighter model; kept as a one-line fallback.
 - `gemini-2.5-flash`: free but access-limited to projects that used it in the past; not safe for a new demo.
 - `gemini-flash-latest`: a hot-swapped alias, not reproducible.
 - AI Gateway or a paid model: excluded by the zero-spend rule.
 
 **Consequences.**
-- Free-tier latency is visible: measured time to first token was 15–27 seconds, and it varies by load and project quota. The UI will stream tokens, but the first token can still take that long.
+- Free-tier latency is visible: a short direct call to 3.6 Flash measured 26–33 s end to end and 27 s to the first streamed token; a full DurableAgent workflow measured about 54 s. Flash-Lite measured about 18 s. It varies by load and project quota.
 - Google may use free-tier prompts to improve its products; only mock data goes in.
 - `thinkingLevel: "minimal"` is rejected by `gemini-3.6-flash`-era models with a 400 error, so no thinking override is sent. Lower levels did not improve latency in the measurements.
 - A `429` is handled with a friendly message; the exact error is `APICallError` with `statusCode: 429`.
@@ -248,6 +248,49 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 
 **Consequences.**
 - The policy module is pure and can be tested without HTTP, Slack or a model. This checkpoint ran 20 checks covering both sides of every threshold, the extra-rule behavior and the reducer idempotency.
+- `raise_limit` rejects non-positive limits and limits that do not exceed the current one with `invalid_limit` / `limit_not_increased`. The tool layer will also refuse before asking for approval.
 - Mock state lives in memory for now. In Stage 2 it will live inside the conversation workflow; a new conversation starts from the JSON. Real balances need a database later.
 - Extra rules cannot clear a code reason; that invariant is encoded in the return shape and will be tested in Stage 5.
 - The mock is data, not a simulation: no external money moves.
+
+## D14. One reusable approval helper with a random token, resumable only from the signed Slack endpoint
+
+**Context.** Stage 2 tools need the same durable pause as the Stage 1 demo. Copying the Stage 1 workflow into each tool would let the two paths drift. The token must not be derived from model output, and the chat API must not be able to resume an approval.
+
+**Decision.** `workflows/approval-request.ts` exposes `requestApproval({ request, timeoutMs })` at workflow level (no `"use workflow"`), so tools can await it. It:
+- generates the token with `createHookToken()` (a `crypto.randomUUID()` in a step), not with the tool call ID;
+- creates the hook and awaits `getConflict()` before Slack sees the token;
+- posts a structured Block Kit message;
+- races the hook against `sleep(timeoutMs)`;
+- disposes the hook on timeout, so a late click cannot resume an approval the run already gave up on;
+- updates the Slack message and returns `{ status, approver, decidedAt }`.
+
+`workflows/approval.ts` is now a thin adapter over the helper. Approval hooks are resumed only by `POST /api/slack/interactions`, after signature verification and the allowlist. The future chat endpoint resumes only the chat-message hook by `runId`, never an approval hook.
+
+**Alternatives considered.**
+- Tool call ID as token: convenient routing, but the token would be derived from model output, easy to correlate, and would invite a chat endpoint to resume it. The Stage 1 random token is kept deliberately.
+- Duplicate the Stage 1 code in each tool: guaranteed drift in timeout, disposal, Slack updates and authorization.
+- A raw `createWebhook()` URL in Slack: the URL would be the only authorization.
+- Let `/api/chat` resume any hook: a compromised chat client could approve a financial action.
+
+**Consequences.**
+- One code path for signature, allowlist, idempotency, timeout and message updates.
+- The helper is workflow-level; tools call it without `"use step"`.
+- A click after the timeout finds no hook and the route acknowledges it with `200`.
+- The token is visible to channel members; it is not the authentication. D6 and D10 remain the security boundary.
+
+## D15. Store the approver's Slack name and user ID
+
+**Context.** D10 authorizes by immutable Slack user ID, but the hook payload stored only a display name. Names change and are not unique; a regulated wallet needs to record who approved.
+
+**Decision.** Introduce `Approver = { id, name }`. The interactions route fills both from the Slack payload, the hook payload and the decision carry both, the Slack decision message shows `@name (U…)`, and the Stage 1 page shows the name. Authorization keeps using only the ID.
+
+**Alternatives considered.**
+- Name only: readable but mutable and ambiguous.
+- ID only: unambiguous but unreadable for a human reviewing a run.
+- Logs only: runtime logs last one hour on Hobby; not an audit trail.
+
+**Consequences.**
+- The payload and result shapes changed; the Stage 1 page was updated.
+- Names are display data; the ID remains the authorization and audit key.
+- Slack messages show both, so an approver can be traced without opening the app.

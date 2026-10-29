@@ -1,6 +1,9 @@
 import { FatalError } from "workflow";
 
-import type { ApprovalHookPayload } from "@/lib/approval-types";
+import type {
+  ApprovalHookPayload,
+  ApprovalRequest,
+} from "@/lib/approval-types";
 import { callSlack, requireEnv } from "@/lib/slack-api";
 import { buildApprovalBlocks, buildDecisionBlocks } from "@/lib/slack-blocks";
 
@@ -20,14 +23,14 @@ export async function postApprovalMessage({
   request,
 }: {
   token: string;
-  request: string;
+  request: ApprovalRequest;
 }): Promise<SlackMessageRef> {
   "use step";
 
   const channelId = requireEnv("SLACK_APPROVALS_CHANNEL_ID");
   const response = await callSlack("chat.postMessage", {
     channel: channelId,
-    text: `Approval needed: ${request}`,
+    text: `Approval needed: ${request.summary}`,
     blocks: buildApprovalBlocks({ token, request }),
   });
 
@@ -49,7 +52,7 @@ export async function updateApprovalMessage({
 }: {
   channelId: string;
   messageTs: string;
-  request: string;
+  request: ApprovalRequest;
   decision: ApprovalHookPayload | null;
   timeoutMs: number;
 }): Promise<void> {
@@ -59,7 +62,7 @@ export async function updateApprovalMessage({
     channel: channelId,
     ts: messageTs,
     text: decision
-      ? `${decision.approved ? "Approved" : "Rejected"} by @${decision.approver}`
+      ? `${decision.approved ? "Approved" : "Rejected"} by @${decision.approver.name} (${decision.approver.id})`
       : "Approval timed out",
     blocks: buildDecisionBlocks({ request, decision, timeoutMs }),
   });
