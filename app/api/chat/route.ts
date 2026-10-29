@@ -4,6 +4,7 @@ import {
   type UIMessageChunk,
 } from "ai";
 import { getRun, start } from "workflow/api";
+import { HookNotFoundError } from "workflow/errors";
 
 import { findAccount, loadWallet } from "@/lib/wallet";
 import { chatWorkflow } from "@/workflows/chat";
@@ -27,13 +28,21 @@ export async function POST(request: Request) {
     const run = getRun(body.runId);
 
     if (!(await run.exists)) {
-      return Response.json({ error: "Run not found" }, { status: 404 });
+      return conversationEnded();
+    }
+
+    const runStatus = await run.status;
+    if (
+      runStatus === "completed" ||
+      runStatus === "failed" ||
+      runStatus === "cancelled"
+    ) {
+      return conversationEnded();
     }
 
     if (message === "/done") {
-      // This route only resumes the chat-message hook. Approval hooks are
-      // resumed exclusively by the signed Slack interactions endpoint.
-      await chatMessageHook.resume(body.runId, { message });
+      const ended = await resumeChat(body.runId, message);
+      if (ended) return ended;
 
       return createUIMessageStreamResponse({
         stream: finishOnlyStream(),
@@ -46,9 +55,8 @@ export async function POST(request: Request) {
     const tailIndex = await probe.getTailIndex();
     await probe.cancel();
 
-    // This route only resumes the chat-message hook. Approval hooks are
-    // resumed exclusively by the signed Slack interactions endpoint.
-    await chatMessageHook.resume(body.runId, { message });
+    const ended = await resumeChat(body.runId, message);
+    if (ended) return ended;
 
     const stream = sliceUntilFinish(
       run.getReadable<UIMessageChunk>({ startIndex: tailIndex + 1 })
@@ -75,6 +83,28 @@ export async function POST(request: Request) {
     stream,
     headers: { "x-workflow-run-id": run.runId },
   });
+}
+
+function conversationEnded(): Response {
+  return Response.json(
+    { error: "This conversation has ended or is not an active chat." },
+    { status: 409 }
+  );
+}
+
+async function resumeChat(
+  runId: string,
+  message: string
+): Promise<Response | null> {
+  try {
+    // This route only resumes the chat-message hook. Approval hooks are
+    // resumed exclusively by the signed Slack interactions endpoint.
+    await chatMessageHook.resume(runId, { message });
+    return null;
+  } catch (error) {
+    if (HookNotFoundError.is(error)) return conversationEnded();
+    throw error;
+  }
 }
 
 function lastUserText(messages: UIMessage[] | undefined): string | null {

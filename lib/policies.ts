@@ -22,6 +22,7 @@ export type PolicyReason = {
 export type PolicyContext = {
   customerId: string;
   customerName: string;
+  accountLockedForFraud: boolean;
 };
 
 export type ExtraPolicyRule = (
@@ -29,10 +30,21 @@ export type ExtraPolicyRule = (
   context: PolicyContext
 ) => PolicyReason | null;
 
-type CodeRule = (action: PolicyAction) => PolicyReason | null;
+type CodeRule = (
+  action: PolicyAction,
+  context: PolicyContext
+) => PolicyReason | null;
 
 // Code rules are immutable. Plain-text rules can add reasons, never remove these.
 const CODE_RULES: CodeRule[] = [
+  (action, context) =>
+    context.accountLockedForFraud &&
+    (action.type === "refund_fee" || action.type === "reverse_transaction")
+      ? {
+          code: "account_locked_fraud",
+          label: "Account locked for suspected fraud",
+        }
+      : null,
   (action) =>
     action.type === "refund_fee" && action.amountCents > 2000
       ? { code: "fee_refund_over_20", label: "Fee refund above USD 20" }
@@ -74,7 +86,7 @@ export function evaluateGuardrails(
   context: PolicyContext,
   extraRules: ExtraPolicyRule[] = []
 ): { requiresApproval: boolean; reasons: PolicyReason[] } {
-  const codeReasons = CODE_RULES.map((rule) => rule(action)).filter(
+  const codeReasons = CODE_RULES.map((rule) => rule(action, context)).filter(
     (reason): reason is PolicyReason => reason !== null
   );
 

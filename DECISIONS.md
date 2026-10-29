@@ -329,9 +329,11 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - The five tools are `lookup_account`, `refund_fee`, `reverse_transaction`, `raise_limit` and `unlock_account`. None accepts a customer ID.
 - `refund_fee` and `reverse_transaction` accept only `transaction_id` and the customer's `reason`; `raise_limit` accepts the new limit; `unlock_account` accepts the reason. Amounts, `recipientReceived`, `lockReason` and the current limit are read from the wallet before `evaluateGuardrails`.
 - Ownership is checked before any approval. A transaction that belongs to another customer returns `refused`; it never creates a hook or posts to Slack.
+- A refund or reversal on an account locked for suspected fraud always requires approval, with the reason "Account locked for suspected fraud". This is an additive code rule: it does not block the action and plain text cannot remove it.
+- Missing `recipientReceived` is treated as `true` in the reversal policy, so an unknown recipient state fails closed.
 - Write actions run through one serialized action queue per conversation, inside memoized steps, so concurrent tool calls cannot overwrite each other and replay does not apply an action twice. Reducers are idempotent by transaction state.
 - Slack messages are assembled from code data (customer, amount, rule). Customer-provided text is escaped and labeled `Customer says:` before it enters mrkdwn.
-- The temporary instructions require the model to report `completed`, `rejected`, `timed_out` and `refused` honestly; the code, not the model, decides.
+- The temporary instructions list the real tool states (`completed`, `rejected`, `timed_out`, `refused`) and error codes (`transaction_not_found`, `not_a_fee`, `not_a_transfer`, `already_done`, `invalid_limit`, `limit_not_increased`, `already_unlocked`, `account_not_found`). The code, not the model, decides.
 
 **Alternatives considered.**
 - Trust model-supplied amounts and statuses: a prompt could inflate or deflate the facts the policy evaluates.
@@ -362,6 +364,7 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - State is durable within a conversation and resets when a new one starts.
 - Waiting uses no compute; the run stays open while the human decides.
 - The UI must send `runId` on every follow-up.
+- `/api/chat` returns `409` with a clear message when the conversation ended or the run is not an active chat, instead of surfacing a resume error as `500`.
 - There is no GET stream reconnect route. A stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
 - `/api/chat` has no user authentication yet; the demo exposes the run ID.
 
@@ -380,3 +383,23 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - The user sees a normal assistant message and can try again.
 - The error is logged for the operator.
 - The fallback is exercised on a real 429; four short messages in the Tramo 3 test did not trigger one.
+
+## D20. A fraud lock adds approval to refunds and reversals
+
+**Context.** With Ana locked for suspected fraud, the model refused a reversal before calling a tool, so the decision depended on the model. A lock should not silently block an action a human could approve.
+
+**Decision.** `PolicyContext` carries `accountLockedForFraud`. When true, `refund_fee` and `reverse_transaction` always require approval with the reason "Account locked for suspected fraud". The rule only adds a reason; the amount and recipient rules still apply. The temporary instructions tell the model to call the tool and let the code open the approval instead of refusing on its own. Missing `recipientReceived` is treated as `true`, so an unknown recipient state fails closed.
+
+**Alternatives considered.** Keep the model-side refusal (nondeterministic), hard-block locked accounts (no human override), add the rule only to the prompt (advisory).
+
+**Consequences.** Ana's USD 80 reversal now reaches Slack even below the USD 100 threshold; the model no longer decides policy; the approval message shows the fraud-lock reason; the reducer still validates.
+
+## D21. Minimal chat UI with WorkflowChatTransport
+
+**Context.** The page must stream per-turn replies and carry the conversation run ID without a database. Workflow DevKit's DurableAgent-era transport already handles UI message streams.
+
+**Decision.** `/chat` is a client page using `useChat` from `@ai-sdk/react` and `WorkflowChatTransport` from `@workflow/ai`. `sendMessage` carries `runId` and, on the first turn, `customerId` in the request body; the response header `x-workflow-run-id` is stored in state. The chat mounts after hydration with a small loading guard, because `useChat` generates random IDs and Next's prerender rejects them under `cacheComponents`. The demo customer selector is disabled after the first message. `/` remains the Stage 1 approval page.
+
+**Alternatives considered.** A custom SSE parser (more code for a solved problem), replacing the Stage 1 demo (loses the approval debug page), server actions (no streaming).
+
+**Consequences.** The page is minimal and will be replaced in Stage 4; no GET reconnect route exists, so a cut stream surfaces as an error in the UI; the run ID lives in React state and is lost on refresh (Stage 4 can persist it).

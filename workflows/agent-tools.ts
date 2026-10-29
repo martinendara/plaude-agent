@@ -15,6 +15,7 @@ import {
   findAccount,
   findTransaction,
   type Wallet,
+  type WalletAccount,
   type WalletMutation,
   WalletError,
 } from "@/lib/wallet";
@@ -87,7 +88,14 @@ export function createAgentTools({
   customerId,
   customerName,
 }: ToolContext) {
-  const policyContext: PolicyContext = { customerId, customerName };
+  function contextFor(account: WalletAccount): PolicyContext {
+    return {
+      customerId,
+      customerName,
+      accountLockedForFraud:
+        account.lock.locked && account.lock.reason === "suspected_fraud",
+    };
+  }
 
   return {
     lookup_account: tool({
@@ -110,7 +118,7 @@ export function createAgentTools({
             status: transaction.status,
             description: transaction.description,
             fee_refunded: transaction.feeRefunded ?? false,
-            recipient_received: transaction.recipientReceived ?? null,
+            recipient_received: transaction.recipientReceived ?? true,
           })),
         };
       },
@@ -118,7 +126,7 @@ export function createAgentTools({
 
     refund_fee: tool({
       description:
-        "Refund a fee. Pass only the fee transaction ID and the customer's reason; the amount is read from the wallet. The code decides whether a human approval is needed.",
+        "Refund a fee. Pass only the fee transaction ID and the customer's reason; the amount is read from the wallet. The code decides whether a human approval is needed, including on a fraud-locked account. Call the tool; do not refuse on your own.",
       inputSchema: z.object({
         transaction_id: z
           .string()
@@ -153,7 +161,7 @@ export function createAgentTools({
           const amountCents = transaction.amountCents;
           const { requiresApproval, reasons } = evaluateGuardrails(
             { type: "refund_fee", amountCents },
-            policyContext
+            contextFor(found.account)
           );
 
           if (requiresApproval) {
@@ -215,7 +223,7 @@ export function createAgentTools({
 
     reverse_transaction: tool({
       description:
-        "Reverse a transfer. Pass only the transfer ID and the customer's reason; the amount and whether the recipient already received the money are read from the wallet.",
+        "Reverse a transfer. Pass only the transfer ID and the customer's reason; the amount and whether the recipient already received the money are read from the wallet. Missing recipient data is treated as received. A fraud lock adds approval; call the tool and let the code decide.",
       inputSchema: z.object({
         transaction_id: z
           .string()
@@ -252,9 +260,9 @@ export function createAgentTools({
             {
               type: "reverse_transaction",
               amountCents,
-              recipientReceived: transaction.recipientReceived ?? false,
+              recipientReceived: transaction.recipientReceived ?? true,
             },
-            policyContext
+            contextFor(found.account)
           );
 
           if (requiresApproval) {
@@ -355,7 +363,7 @@ export function createAgentTools({
               currentLimitCents: account.dailyLimitCents,
               newLimitCents,
             },
-            policyContext
+            contextFor(account)
           );
 
           if (requiresApproval) {
@@ -434,7 +442,7 @@ export function createAgentTools({
 
           const { requiresApproval, reasons } = evaluateGuardrails(
             { type: "unlock_account", lockReason: account.lock.reason },
-            policyContext
+            contextFor(account)
           );
 
           if (requiresApproval) {

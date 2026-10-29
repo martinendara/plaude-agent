@@ -2,7 +2,7 @@
 
 Customer support agent for Acme Wallet (a mock digital wallet), built for the Plaude engineering challenge.
 
-**Current stage:** Stage 2 in progress — the agent tools and the multi-turn chat API are built. The minimal chat UI comes next.
+**Current stage:** Stage 2 in progress — the tools, the multi-turn chat API and the minimal `/chat` page are built. Stage 3 (plain-text instructions) and the designed UI (Stage 4) come next.
 
 ## What exists now
 
@@ -12,6 +12,7 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 - `workflows/approval-request.ts`: one workflow-level helper that creates the hook with a random token, posts to Slack, waits with a timeout, and returns the decision. The tools reuse it.
 - `workflows/chat.ts` and `workflows/agent-tools.ts`: a multi-turn `DurableAgent` conversation with five tools, serialized writes and wallet-owned facts.
 - `app/api/chat/route.ts`: starts a conversation or resumes one with a follow-up message, and returns the per-turn UI stream.
+- `app/chat/page.tsx`: the minimal chat UI with a demo customer selector; `/` keeps the Stage 1 approval demo.
 - `app/api/approval/route.ts`: starts a run and returns its `runId` immediately.
 - `app/api/approval/[runId]/route.ts`: returns the run status and result for polling.
 - `app/api/slack/interactions/route.ts`: verifies Slack's HMAC signature, checks the clicker against `SLACK_APPROVER_IDS`, and resumes the hook.
@@ -39,10 +40,13 @@ A request older than 5 minutes, or one with an invalid signature, is rejected wi
 - One workflow owns the conversation: a chat hook with `token = runId` receives each message, and the workflow keeps the model history and the mock wallet state across turns.
 - `DurableAgent` runs five tools: `lookup_account`, `refund_fee`, `reverse_transaction`, `raise_limit` and `unlock_account`. Tools receive IDs (and the new limit); amounts, recipient status, lock reason and the current limit come from the wallet.
 - Ownership is a hard block: a transaction from another customer returns `refused`, never reaches Slack, and no approver can allow it. Write actions are serialized per conversation and applied in memoized steps.
+- A refund or reversal on an account locked for suspected fraud always requires human approval. The rule only adds a reason; it never allows an action or blocks it. The model does not decide this; it calls the tool.
+- If `recipientReceived` is missing, the reversal policy treats it as `true` (fail closed).
 - The Slack approval message is built from code data. Customer-provided text is escaped and labeled `Customer says:`.
 - `/api/chat` only resumes the chat-message hook. Approval hooks are resumed only by the signed Slack endpoint.
 - `customerId` is accepted only when a conversation starts; follow-ups ignore it.
 - A `429` is caught and written to the stream as a friendly assistant message.
+- `/api/chat` returns `409` with a clear message when the conversation ended or the `runId` is not an active chat.
 - Send `/done` to end a conversation. There is no GET reconnection route: a stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
 
 ## Mock wallet and approval rules
@@ -60,7 +64,8 @@ Amounts are stored as integer cents. `lib/wallet.ts` finds accounts and transact
 - fee refund above USD 20;
 - reversal above USD 100, or when the recipient already received the funds;
 - new limit above 2x the current limit;
-- unlock when the lock reason is suspected fraud.
+- unlock when the lock reason is suspected fraud;
+- refund or reversal when the account is locked for suspected fraud (an additive code rule).
 
 `raise_limit` also rejects non-positive limits and limits that do not exceed the current one, with a clear `WalletError`.
 
@@ -75,7 +80,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000> and press **Request approval**.
+Open <http://localhost:3000/chat> for the agent chat, or <http://localhost:3000> for the Stage 1 approval demo.
 
 Locally, the bot can post to `#approvals`, but a real Slack click cannot reach your Mac: Slack needs a public HTTPS URL. To exercise the full click-to-resume loop, deploy to Vercel (Stage 1) and set the interactivity URL below.
 
@@ -127,15 +132,15 @@ To get a member ID, open the person's profile in Slack and choose **More → Cop
 ## Project layout
 
 ```
-app/                 Pages and Route Handlers
+app/                 Pages and Route Handlers (chat UI at /chat)
 data/                Mock wallet customers and transactions
 lib/                 Model, wallet, policies, money, Slack helpers and types
-workflows/           Workflow functions and their steps
+workflows/           Workflow functions, tools and their steps
 DECISIONS.md         Architecture decisions, one entry per choice
 CLAUDE.md            Project instructions for the coding agent
 ```
 
-Next steps: the minimal chat UI, then `instructions/` (Stage 3) and the designed UI with the operator timeline (Stage 4). As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
+Next steps: `instructions/` (Stage 3) and the designed UI with the operator timeline (Stage 4). As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
 
 ## Notes
 
