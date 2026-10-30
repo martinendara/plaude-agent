@@ -3,7 +3,7 @@ import type {
   ApprovalRequest,
 } from "@/lib/approval-types";
 import { formatUtc } from "@/lib/format-utc";
-import { formatUsd } from "@/lib/money";
+import { formatUsd, formatUsdCompact } from "@/lib/money";
 
 type SlackBlock = {
   type: string;
@@ -39,7 +39,12 @@ export function buildApprovalBlocks({
     });
   }
 
-  if (request.amountCents !== undefined) {
+  if (request.limitChange) {
+    fields.push({
+      type: "mrkdwn",
+      text: `*Limit*\n*${limitChangeLabel(request.limitChange)}*`,
+    });
+  } else if (request.amountCents !== undefined) {
     fields.push({
       type: "mrkdwn",
       text: `*Amount*\n*${formatUsd(request.amountCents)}*`,
@@ -109,6 +114,15 @@ export function buildApprovalBlocks({
   return blocks;
 }
 
+function limitChangeLabel(change: {
+  currentCents: number;
+  newCents: number;
+}): string {
+  const next = formatUsdCompact(change.newCents).replace(/^USD /, "");
+
+  return `${formatUsdCompact(change.currentCents)} → ${next}`;
+}
+
 export function buildDecisionBlocks({
   request,
   decision,
@@ -142,9 +156,11 @@ export function buildDecisionBlocks({
 
   const contextParts = [
     request.customerName,
-    request.amountCents !== undefined
-      ? formatUsd(request.amountCents)
-      : undefined,
+    request.limitChange
+      ? limitChangeLabel(request.limitChange)
+      : request.amountCents !== undefined
+        ? formatUsd(request.amountCents)
+        : undefined,
   ].filter((part): part is string => part !== undefined);
 
   if (contextParts.length > 0) {

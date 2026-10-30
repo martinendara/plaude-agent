@@ -49,7 +49,7 @@ Report the result exactly. Never say an action is done unless the status is `com
 
 ## Tone
 
-Short, plain and honest. No jargon. Do not promise something you cannot deliver. Do not use markdown formatting: write plain sentences and simple lists. Reply in the customer's language.
+Short, plain and honest. No jargon. Do not promise something you cannot deliver. Format money as USD 1,200.00: a space after USD, thousands separators and two decimals. Do not use markdown formatting: write plain sentences and simple lists. Reply in the customer's language.
 
 ## Approval rules
 

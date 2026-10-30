@@ -15,6 +15,7 @@ export type ApprovalRequest = {
   customer?: ApprovalCustomer;
   customerName?: string;
   amountCents?: number;
+  limitChange?: { currentCents: number; newCents: number };
   rule?: string;
   details?: string;
 };

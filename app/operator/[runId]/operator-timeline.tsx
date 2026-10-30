@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
-import { formatUsd } from "@/lib/money";
+import { formatUsd, formatUsdCompact } from "@/lib/money";
 import type { ApprovalCustomer } from "@/lib/approval-types";
 import type {
   ActionTimelineRecord,
@@ -526,11 +526,6 @@ function toolLabel(tool: ActionTool): string {
   }
 }
 
-function formatUsdCompact(cents: number): string {
-  return `USD ${(cents / 100).toLocaleString("en-US", {
-    maximumFractionDigits: 2,
-  })}`;
-}
 
 function clock(isoDate: string): string {
   const date = new Date(isoDate);

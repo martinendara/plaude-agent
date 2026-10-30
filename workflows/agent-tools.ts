@@ -551,6 +551,10 @@ export function createAgentTools({
                     customer: customerSnapshot(),
                       customerName,
                     amountCents: newLimitCents,
+                    limitChange: {
+                      currentCents: account.dailyLimitCents,
+                      newCents: newLimitCents,
+                    },
                     rule: reasonsLabel(reasons),
                     details: `Current limit: ${formatUsd(account.dailyLimitCents)}. Requested limit: ${formatUsd(newLimitCents)}.`,
                   },
