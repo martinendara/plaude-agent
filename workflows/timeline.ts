@@ -1,5 +1,7 @@
 import { getWritable } from "workflow";
 
+import type { ApprovalCustomer } from "@/lib/approval-types";
+
 export type ActionTool =
   | "refund_fee"
   | "reverse_transaction"
@@ -29,6 +31,9 @@ export type ActionTimelineRecord = {
   at: string;
   tool: ActionTool;
   input: Record<string, unknown>;
+  customer: ApprovalCustomer;
+  amountCents?: number;
+  limits?: { currentCents: number; newCents: number };
   rules: TimelineRule[];
   approval?:
     | { decidedBy: { id: string; name: string }; decidedAt: string }
@@ -40,6 +45,9 @@ export type PendingTimelineEvent = {
   kind: "pending";
   at: string;
   summary: string;
+  amountCents?: number;
+  timeoutMs: number;
+  customer?: ApprovalCustomer;
 };
 
 export type TimelineEvent = ActionTimelineRecord | PendingTimelineEvent;

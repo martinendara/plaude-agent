@@ -37,7 +37,15 @@ export async function requestApproval({
     runId: workflowRunId,
   });
 
-  await appendTimeline({ kind: "pending", summary: request.summary });
+  await appendTimeline({
+    kind: "pending",
+    summary: request.summary,
+    timeoutMs,
+    ...(request.amountCents !== undefined
+      ? { amountCents: request.amountCents }
+      : {}),
+    ...(request.customer ? { customer: request.customer } : {}),
+  });
 
   const outcome = await Promise.race([
     hook.then((payload) => ({ type: "decision" as const, payload })),

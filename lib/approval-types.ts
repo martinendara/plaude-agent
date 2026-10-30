@@ -3,8 +3,16 @@ export type Approver = {
   name: string;
 };
 
+export type ApprovalCustomer = {
+  id: string;
+  name: string;
+  locked: boolean;
+  lockReason: string | null;
+};
+
 export type ApprovalRequest = {
   summary: string;
+  customer?: ApprovalCustomer;
   customerName?: string;
   amountCents?: number;
   rule?: string;

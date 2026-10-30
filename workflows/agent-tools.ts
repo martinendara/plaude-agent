@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import { APPROVAL_TIMEOUT_MS } from "@/lib/approval-config";
-import type { Approver } from "@/lib/approval-types";
+import type { ApprovalCustomer, Approver } from "@/lib/approval-types";
 import { dollarsToCents, formatUsd } from "@/lib/money";
 import {
   checkOwnership,
@@ -98,6 +98,8 @@ function alreadyHandled(
 
 type ActionMeta = {
   rules: TimelineRule[];
+  amountCents?: number;
+  limits?: { currentCents: number; newCents: number };
   approval?: ActionTimelineRecord["approval"];
 };
 
@@ -120,20 +122,42 @@ function resultOf(outcome: ActionOutcome): TimelineResult {
 async function withTimelineResult(
   tool: ActionTool,
   input: Record<string, unknown>,
+  customer: ApprovalCustomer,
   run: (meta: ActionMeta) => Promise<ActionOutcome>
 ): Promise<ActionOutcome> {
   const meta: ActionMeta = { rules: [] };
-  const outcome = await run(meta);
+  let outcome: ActionOutcome | undefined;
+  let failed = false;
+  let failure: unknown;
 
-  await appendTimeline({
-    tool,
-    input,
-    rules: meta.rules,
-    ...(meta.approval !== undefined ? { approval: meta.approval } : {}),
-    result: resultOf(outcome),
-  });
+  try {
+    outcome = await run(meta);
+  } catch (error) {
+    failed = true;
+    failure = error;
+  } finally {
+    await appendTimeline({
+      tool,
+      input,
+      customer,
+      ...(meta.amountCents !== undefined
+        ? { amountCents: meta.amountCents }
+        : {}),
+      ...(meta.limits !== undefined ? { limits: meta.limits } : {}),
+      rules: meta.rules,
+      ...(meta.approval !== undefined ? { approval: meta.approval } : {}),
+      result: outcome
+        ? resultOf(outcome)
+        : {
+            status: "error",
+            error: "unexpected_error",
+            message: "The action failed before producing a result.",
+          },
+    });
+  }
 
-  return outcome;
+  if (failed) throw failure;
+  return outcome as ActionOutcome;
 }
 
 function notOwner(): ActionOutcome {
@@ -164,6 +188,17 @@ export function createAgentTools({
         account.lock.locked && account.lock.reason === "suspected_fraud",
       locked: account.lock.locked,
       lockReason: account.lock.reason,
+    };
+  }
+
+  function customerSnapshot(): ApprovalCustomer {
+    const account = findAccount(state.wallet, customerId);
+
+    return {
+      id: customerId,
+      name: customerName,
+      locked: account?.lock.locked ?? false,
+      lockReason: account?.lock.reason ?? null,
     };
   }
 
@@ -208,6 +243,7 @@ export function createAgentTools({
           return withTimelineResult(
             "refund_fee",
             { transaction_id, reason },
+            customerSnapshot(),
             async (meta) => {
               const found = findTransaction(state.wallet, transaction_id);
               if (!found) {
@@ -217,6 +253,8 @@ export function createAgentTools({
                 };
               }
               if (!checkOwnership(customerId, found.account.id)) return notOwner();
+
+              meta.amountCents = found.transaction.amountCents;
 
               const claim = await claimTransaction(transaction_id);
               if (claim.status !== "claimed") return alreadyHandled(claim.status);
@@ -251,6 +289,7 @@ export function createAgentTools({
                   const decision = await requestApproval({
                     request: {
                       summary: `Refund fee ${transaction.id}`,
+                      customer: customerSnapshot(),
                       customerName,
                       amountCents,
                       rule: reasonsLabel(reasons),
@@ -329,6 +368,7 @@ export function createAgentTools({
           return withTimelineResult(
             "reverse_transaction",
             { transaction_id, reason },
+            customerSnapshot(),
             async (meta) => {
               const found = findTransaction(state.wallet, transaction_id);
               if (!found) {
@@ -338,6 +378,8 @@ export function createAgentTools({
                 };
               }
               if (!checkOwnership(customerId, found.account.id)) return notOwner();
+
+              meta.amountCents = found.transaction.amountCents;
 
               const claim = await claimTransaction(transaction_id);
               if (claim.status !== "claimed") return alreadyHandled(claim.status);
@@ -376,6 +418,7 @@ export function createAgentTools({
                   const decision = await requestApproval({
                     request: {
                       summary: `Reverse transfer ${transaction.id}`,
+                      customer: customerSnapshot(),
                       customerName,
                       amountCents,
                       rule: reasonsLabel(reasons),
@@ -451,6 +494,7 @@ export function createAgentTools({
           return withTimelineResult(
             "raise_limit",
             { new_daily_limit },
+            customerSnapshot(),
             async (meta) => {
               if (!Number.isFinite(new_daily_limit)) {
                 return {
@@ -465,7 +509,12 @@ export function createAgentTools({
                 return { error: "account_not_found", message: "Account not found." };
               }
 
-              if (newLimitCents <= 0) {
+              meta.limits = {
+                currentCents: account.dailyLimitCents,
+                newCents: newLimitCents,
+              };
+
+            if (newLimitCents <= 0) {
                 return {
                   error: "invalid_limit",
                   message: "The new limit must be positive.",
@@ -497,7 +546,8 @@ export function createAgentTools({
                 const decision = await requestApproval({
                   request: {
                     summary: `Raise daily limit to ${formatUsd(newLimitCents)}`,
-                    customerName,
+                    customer: customerSnapshot(),
+                      customerName,
                     amountCents: newLimitCents,
                     rule: reasonsLabel(reasons),
                     details: `Current limit: ${formatUsd(account.dailyLimitCents)}. Requested limit: ${formatUsd(newLimitCents)}.`,
@@ -565,6 +615,7 @@ export function createAgentTools({
           return withTimelineResult(
             "unlock_account",
             { reason },
+            customerSnapshot(),
             async (meta) => {
               const account = findAccount(state.wallet, customerId);
               if (!account) {
@@ -591,7 +642,8 @@ export function createAgentTools({
                 const decision = await requestApproval({
                   request: {
                     summary: "Unlock account",
-                    customerName,
+                    customer: customerSnapshot(),
+                      customerName,
                     rule: reasonsLabel(reasons),
                     details: `Lock reason: ${account.lock.reason}. ${customerSays(reason)}`,
                   },
