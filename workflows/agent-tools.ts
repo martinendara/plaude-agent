@@ -296,6 +296,7 @@ export function createAgentTools({
                       details: `${transaction.description}. ${customerSays(reason)}`,
                     },
                     timeoutMs: APPROVAL_TIMEOUT_MS,
+                    rules: meta.rules,
                   });
 
                   meta.approval =
@@ -425,6 +426,7 @@ export function createAgentTools({
                       details: `${transaction.description}. ${customerSays(reason)}`,
                     },
                     timeoutMs: APPROVAL_TIMEOUT_MS,
+                    rules: meta.rules,
                   });
 
                   meta.approval =
@@ -553,6 +555,7 @@ export function createAgentTools({
                     details: `Current limit: ${formatUsd(account.dailyLimitCents)}. Requested limit: ${formatUsd(newLimitCents)}.`,
                   },
                   timeoutMs: APPROVAL_TIMEOUT_MS,
+                  rules: meta.rules,
                 });
 
                 meta.approval =
@@ -648,6 +651,7 @@ export function createAgentTools({
                     details: `Lock reason: ${account.lock.reason}. ${customerSays(reason)}`,
                   },
                   timeoutMs: APPROVAL_TIMEOUT_MS,
+                  rules: meta.rules,
                 });
 
                 meta.approval =

@@ -48,6 +48,7 @@ export type PendingTimelineEvent = {
   amountCents?: number;
   timeoutMs: number;
   customer?: ApprovalCustomer;
+  rules?: TimelineRule[];
 };
 
 export type TimelineEvent = ActionTimelineRecord | PendingTimelineEvent;

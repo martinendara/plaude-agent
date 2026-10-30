@@ -10,15 +10,17 @@ import {
   postApprovalMessage,
   updateApprovalMessage,
 } from "@/workflows/approval-steps";
-import { appendTimeline } from "@/workflows/timeline";
+import { appendTimeline, type TimelineRule } from "@/workflows/timeline";
 
 // Workflow-level helper: no "use workflow" here, so tools can await it.
 export async function requestApproval({
   request,
   timeoutMs,
+  rules,
 }: {
   request: ApprovalRequest;
   timeoutMs: number;
+  rules?: TimelineRule[];
 }): Promise<ApprovalDecision> {
   const { workflowRunId } = getWorkflowMetadata();
   const token = await createHookToken();
@@ -45,6 +47,7 @@ export async function requestApproval({
       ? { amountCents: request.amountCents }
       : {}),
     ...(request.customer ? { customer: request.customer } : {}),
+    ...(rules && rules.length > 0 ? { rules } : {}),
   });
 
   const outcome = await Promise.race([
