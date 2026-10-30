@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { WorkflowChatTransport } from "@workflow/ai";
 import type { UIMessage } from "ai";
 import {
+  useEffect,
   useSyncExternalStore,
   useState,
   type FormEvent,
@@ -67,6 +68,10 @@ function Chat({ onNewConversation }: { onNewConversation: () => void }) {
 
   const { messages, sendMessage, status, error } = useChat({ transport });
   const busy = status === "submitted" || status === "streaming";
+
+  useEffect(() => {
+    if (error) console.error("Chat connection error", error);
+  }, [error]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -175,7 +180,8 @@ function Chat({ onNewConversation }: { onNewConversation: () => void }) {
 
           {error && (
             <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-              {error.message}
+              The connection was interrupted. Your request is still being
+              processed.
             </p>
           )}
         </div>
