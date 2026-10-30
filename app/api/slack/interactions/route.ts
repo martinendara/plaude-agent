@@ -10,6 +10,7 @@ type SlackInteraction = {
   type?: string;
   channel?: { id?: string };
   user?: { id?: string; name?: string };
+  message?: { ts?: string };
   actions?: Array<{ action_id?: string; value?: string }>;
 };
 
@@ -94,13 +95,47 @@ export async function POST(request: Request) {
     await resumeHook(token, approval);
   } catch (error) {
     if (HookNotFoundError.is(error)) {
-      return Response.json({ ok: true, note: "already resolved" });
+      await markRequestInactive({
+        channelId: payload.channel?.id,
+        messageTs: payload.message?.ts,
+      });
+
+      return Response.json({ ok: true, note: "no longer active" });
     }
 
     throw error;
   }
 
   return Response.json({ ok: true });
+}
+
+async function markRequestInactive({
+  channelId,
+  messageTs,
+}: {
+  channelId: string | undefined;
+  messageTs: string | undefined;
+}): Promise<void> {
+  if (!channelId || !messageTs) return;
+
+  try {
+    await callSlack("chat.update", {
+      channel: channelId,
+      ts: messageTs,
+      text: "This request is no longer active",
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "This request is no longer active.",
+          },
+        },
+      ],
+    });
+  } catch (error) {
+    console.error("Could not mark the approval message inactive", error);
+  }
 }
 
 async function notifyNotAuthorized({
