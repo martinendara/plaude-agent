@@ -13,9 +13,11 @@ type SlackBlock = {
 export function buildApprovalBlocks({
   token,
   request,
+  timelineUrl,
 }: {
   token: string;
   request: ApprovalRequest;
+  timelineUrl?: string;
 }): SlackBlock[] {
   const blocks: SlackBlock[] = [
     {
@@ -87,6 +89,20 @@ export function buildApprovalBlocks({
         text: { type: "plain_text", text: "Reject", emoji: false },
         value: token,
       },
+      ...(timelineUrl
+        ? [
+            {
+              type: "button",
+              action_id: "view_timeline",
+              text: {
+                type: "plain_text",
+                text: "View timeline",
+                emoji: false,
+              },
+              url: timelineUrl,
+            },
+          ]
+        : []),
     ],
   });
 
@@ -97,10 +113,12 @@ export function buildDecisionBlocks({
   request,
   decision,
   timeoutMs,
+  timelineUrl,
 }: {
   request: ApprovalRequest;
   decision: ApprovalHookPayload | null;
   timeoutMs: number;
+  timelineUrl?: string;
 }): SlackBlock[] {
   const minutes = Math.round(timeoutMs / 60_000);
   const outcome = decision
@@ -150,6 +168,25 @@ export function buildDecisionBlocks({
       },
     ],
   });
+
+  if (timelineUrl) {
+    blocks.push({
+      type: "actions",
+      block_id: "timeline_actions",
+      elements: [
+        {
+          type: "button",
+          action_id: "view_timeline",
+          text: {
+            type: "plain_text",
+            text: "View timeline",
+            emoji: false,
+          },
+          url: timelineUrl,
+        },
+      ],
+    });
+  }
 
   return blocks;
 }

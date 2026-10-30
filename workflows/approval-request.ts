@@ -1,4 +1,4 @@
-import { createHook, sleep } from "workflow";
+import { createHook, getWorkflowMetadata, sleep } from "workflow";
 
 import type {
   ApprovalDecision,
@@ -10,6 +10,7 @@ import {
   postApprovalMessage,
   updateApprovalMessage,
 } from "@/workflows/approval-steps";
+import { appendTimeline } from "@/workflows/timeline";
 
 // Workflow-level helper: no "use workflow" here, so tools can await it.
 export async function requestApproval({
@@ -19,6 +20,7 @@ export async function requestApproval({
   request: ApprovalRequest;
   timeoutMs: number;
 }): Promise<ApprovalDecision> {
+  const { workflowRunId } = getWorkflowMetadata();
   const token = await createHookToken();
   const hook = createHook<ApprovalHookPayload>({ token });
 
@@ -29,7 +31,13 @@ export async function requestApproval({
     throw new Error("Approval hook token is already in use");
   }
 
-  const message = await postApprovalMessage({ token, request });
+  const message = await postApprovalMessage({
+    token,
+    request,
+    runId: workflowRunId,
+  });
+
+  await appendTimeline({ kind: "pending", summary: request.summary });
 
   const outcome = await Promise.race([
     hook.then((payload) => ({ type: "decision" as const, payload })),
@@ -45,6 +53,7 @@ export async function requestApproval({
       request,
       decision: null,
       timeoutMs,
+      runId: workflowRunId,
     });
 
     return { status: "timed_out" };
@@ -57,6 +66,7 @@ export async function requestApproval({
     request,
     decision: outcome.payload,
     timeoutMs,
+    runId: workflowRunId,
   });
 
   return approved

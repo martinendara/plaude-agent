@@ -113,13 +113,23 @@ function Chat({ onNewConversation }: { onNewConversation: () => void }) {
               Support chat
             </h1>
           </div>
-          <button
-            type="button"
-            onClick={newConversation}
-            className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium transition hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:border-zinc-700 dark:hover:bg-zinc-900"
-          >
-            New conversation
-          </button>
+          <div className="flex items-center gap-3">
+            {runId && (
+              <a
+                href={`/operator/${runId}`}
+                className="text-sm font-medium text-zinc-600 underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:text-zinc-300"
+              >
+                View timeline
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={newConversation}
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium transition hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            >
+              New conversation
+            </button>
+          </div>
         </header>
 
         <label className="flex flex-col gap-1 text-sm">
@@ -159,8 +169,7 @@ function Chat({ onNewConversation }: { onNewConversation: () => void }) {
 
           {busy && (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              Working... If a human approval is needed, it appears in
-              #approvals.
+              Working on it. Some actions need a human review.
             </p>
           )}
 
@@ -213,8 +222,8 @@ function Message({ message }: { message: UIMessage }) {
       <p
         className={
           isUser
-            ? "mt-1 inline-block rounded-xl bg-zinc-900 px-4 py-2 text-left text-sm text-white dark:bg-zinc-50 dark:text-zinc-900"
-            : "mt-1 text-sm leading-6"
+            ? "mt-1 inline-block whitespace-pre-wrap break-words rounded-xl bg-zinc-900 px-4 py-2 text-left text-sm text-white dark:bg-zinc-50 dark:text-zinc-900"
+            : "mt-1 whitespace-pre-wrap break-words text-sm leading-6"
         }
       >
         {text}

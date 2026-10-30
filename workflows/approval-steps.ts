@@ -18,12 +18,20 @@ export async function createHookToken(): Promise<string> {
   return crypto.randomUUID();
 }
 
+function timelineUrl(runId: string): string | undefined {
+  const base = process.env.APP_BASE_URL?.trim().replace(/\/+$/, "");
+
+  return base ? `${base}/operator/${runId}` : undefined;
+}
+
 export async function postApprovalMessage({
   token,
   request,
+  runId,
 }: {
   token: string;
   request: ApprovalRequest;
+  runId: string;
 }): Promise<SlackMessageRef> {
   "use step";
 
@@ -31,7 +39,11 @@ export async function postApprovalMessage({
   const response = await callSlack("chat.postMessage", {
     channel: channelId,
     text: `Approval needed: ${request.summary}`,
-    blocks: buildApprovalBlocks({ token, request }),
+    blocks: buildApprovalBlocks({
+      token,
+      request,
+      timelineUrl: timelineUrl(runId),
+    }),
   });
 
   if (!response.ts) {
@@ -49,12 +61,14 @@ export async function updateApprovalMessage({
   request,
   decision,
   timeoutMs,
+  runId,
 }: {
   channelId: string;
   messageTs: string;
   request: ApprovalRequest;
   decision: ApprovalHookPayload | null;
   timeoutMs: number;
+  runId: string;
 }): Promise<void> {
   "use step";
 
@@ -64,6 +78,11 @@ export async function updateApprovalMessage({
     text: decision
       ? `${decision.approved ? "Approved" : "Rejected"} by @${decision.approver.name} (${decision.approver.id})`
       : "Approval timed out",
-    blocks: buildDecisionBlocks({ request, decision, timeoutMs }),
+    blocks: buildDecisionBlocks({
+      request,
+      decision,
+      timeoutMs,
+      timelineUrl: timelineUrl(runId),
+    }),
   });
 }

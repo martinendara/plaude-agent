@@ -446,6 +446,7 @@ export function compileTextRules(rules: TextRule[]): ExtraPolicyRule[] {
         ? {
             code: `text:${rule.tool}:${rule.line}`,
             label: rule.reason,
+            source: "text",
           }
         : null;
     };

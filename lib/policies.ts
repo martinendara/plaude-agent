@@ -17,6 +17,7 @@ export type PolicyAction =
 export type PolicyReason = {
   code: string;
   label: string;
+  source: "code" | "text";
 };
 
 export type PolicyContext = {
@@ -45,17 +46,23 @@ const CODE_RULES: CodeRule[] = [
       ? {
           code: "account_locked_fraud",
           label: "Account locked for suspected fraud",
+          source: "code",
         }
       : null,
   (action) =>
     action.type === "refund_fee" && action.amountCents > 2000
-      ? { code: "fee_refund_over_20", label: "Fee refund above USD 20" }
+      ? {
+        code: "fee_refund_over_20",
+        label: "Fee refund above USD 20",
+        source: "code",
+      }
       : null,
   (action) =>
     action.type === "reverse_transaction" && action.amountCents > 10000
       ? {
           code: "reversal_over_100",
           label: "Transfer reversal above USD 100",
+          source: "code",
         }
       : null,
   (action) =>
@@ -63,6 +70,7 @@ const CODE_RULES: CodeRule[] = [
       ? {
           code: "recipient_already_paid",
           label: "Recipient already received the funds",
+          source: "code",
         }
       : null,
   (action) =>
@@ -71,6 +79,7 @@ const CODE_RULES: CodeRule[] = [
       ? {
           code: "limit_over_2x",
           label: "New limit is more than 2x the current limit",
+          source: "code",
         }
       : null,
   (action) =>
@@ -79,6 +88,7 @@ const CODE_RULES: CodeRule[] = [
       ? {
           code: "fraud_lock",
           label: "Account is locked for suspected fraud",
+          source: "code",
         }
       : null,
 ];

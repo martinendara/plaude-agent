@@ -491,3 +491,30 @@ The ordering matters: the done marker is created **before** the lock is released
 - **Window between apply and markProcessed.** If a run is terminally cancelled after the mutation step commits and before the done marker is registered, the lock dies with the run and no marker exists, so a later conversation could apply the action again. Workflow steps replay from the event log, so this needs a terminal cancellation in that exact window, not a normal crash. A real wallet would not use two separate operations: it would apply the balance change and record the idempotency key in one atomic write, or pass an idempotency key to the payment processor that performs both. The mock has no store, so this stays a documented Stage 5 test case and a requirement for the Stage 4+ shared store.
 - **`experimental_minRetention` is experimental.** Its name and accepted values can change, the World must support it (registration fails otherwise), and the Vercel World caps it at 30 days. The option is pinned to the installed `workflow` version, so an upgrade must re-check both the option and its behavior.
 - **`raise_limit` and `unlock_account` do not use a claim.** They change account-level fields, not a transaction, and the reducers limit repetition: a second raise to the same limit fails with `limit_not_increased`, and a second unlock fails with `already_unlocked`. Neither moves money. Two conversations can still diverge on limits or lock state because each has its own clone; that is the same per-run balance limitation noted above, not a double payment. If exact account-level idempotency is needed later, the next step is the same claim keyed by customer, or the shared store.
+
+## D27. Operator timeline from a namespaced durable stream, read-only
+
+**Context.** An operator needs to see, per conversation, what was requested, which rule stopped it (code or text), what happened in Slack, who decided and when, and what was applied. The Workflow DevKit event log persists step events, but it is not exposed to the app as a domain timeline, and `getRun()` retrieves a run only by ID. The panel must not become a second approval path: approval stays in Slack, with the signature check and the approver allowlist.
+
+**Decision.**
+- The workflow writes one **action record** per action to a namespaced stream, `timeline`: `{ at, tool, input, rules: [{ label, source: "code" | "text" }], approval?: { decidedBy: { id, name }, decidedAt } | "timed_out", result }`. It is written in the single wrapper every action tool goes through, not in each tool. `requestApproval` adds one `pending` event when the Slack message is posted.
+- `GET /api/operator/[runId]` reads the stream with `getRun(runId).getReadable({ namespace: "timeline", startIndex: 0 })` up to `getTailIndex()`. No new database and no extra index.
+- `/operator/[runId]` renders the records, polls every 2 seconds, and stops when the run is terminal. Empty and not-found share one message. The panel is read-only: no approve or reject buttons, only a back link.
+- The Slack approval message and the chat link to the panel. The Slack URL is built from `APP_BASE_URL`; the chat uses a relative link.
+
+**Problem solved:** the operator can see the full action, rule, decision and outcome without a new store, and the approval path remains single.
+
+**Without it:** the operator would be blind between Slack and the final result, or would need a database just to reconstruct what the run already knows. Adding approval buttons to the panel would create a second authorization path that does not have the Slack signature and allowlist.
+
+**Alternatives considered.**
+- A KV/database timeline: new infrastructure and a second source of truth; the durable stream already persists across suspension and restarts.
+- Reading the event log through World internals: not a public app API and coupled to the runtime.
+- Deriving the timeline from the customer UI stream: mixes operator data into the customer stream and reads chat chunks, not domain events.
+- Approve/reject in the panel: rejected by principle, even with a login.
+
+**Consequences.**
+- No conversation list: a run is opened from the Slack or chat link. A cross-device list needs an index/store and is future work.
+- No authentication on the panel: anyone with the run ID can read approver names and IDs. It is documented as the next step (operator allowlist or a signed session).
+- A chat run stays `running` while the conversation is open, so polling continues until `/done` or the run ends. The polling cost is small on Hobby but is not free; the page stops on terminal status and does not load-test.
+- One record per action is deliberately less detailed than a full event log: intermediate model text is not part of the operator timeline.
+- `pending` is a single extra event, so an operator sees the wait before the action record closes.

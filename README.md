@@ -2,7 +2,7 @@
 
 Customer support agent for Acme Wallet (a mock digital wallet), built for the Plaude engineering challenge.
 
-**Current stage:** Stage 3 complete — the agent behavior lives in `instructions/agent.md`, the text can add approval rules, and transaction actions are claimed across conversations. Stage 4 (the designed UI and the operator timeline) comes next.
+**Current stage:** Stage 4 complete — a minimal, read-only operator timeline per run. Stage 5 (tests and final README) comes next.
 
 ## What exists now
 
@@ -26,6 +26,10 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 - `scripts/generate-agent-config.mts`: reads `agent.md`, fails the build on invalid rules, and writes the committed `lib/generated/agent-config.ts`.
 - `workflows/transaction-claims.ts` and `workflows/claim-steps.ts`: cross-conversation claims for refunds and reversals (D26).
 - `workflows/agent-tools.ts`: the five tools, the serialized per-conversation queue, and the claims.
+- `workflows/timeline.ts`: one durable record per action in a namespaced `timeline` stream, plus a `pending` event when an approval is posted.
+- `app/api/operator/[runId]/route.ts`: reads the run's timeline stream from the start and returns `{ status, events }`.
+- `app/operator/[runId]/page.tsx`: the read-only operator timeline, polled every 2 seconds until the run is terminal.
+- `instructions/agent.md` now asks the model for plain text; the chat renders it with `whitespace-pre-wrap` and shows a neutral waiting message while a tool runs.
 
 ## How the approval flow works
 
@@ -53,6 +57,17 @@ A request older than 5 minutes, or one with an invalid signature, is rejected wi
 - A `429` is caught and written to the stream as a friendly assistant message.
 - `/api/chat` returns `409` with a clear message when the conversation ended or the `runId` is not an active chat.
 - Send `/done` to end a conversation. There is no GET reconnection route: a stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
+- The chat shows a neutral "Working on it. Some actions need a human review." while a tool runs and never says approved or rejected before the tool result. Once a run exists, a **View timeline** link opens the operator panel for that conversation.
+
+## Operator timeline
+
+`/operator/[runId]` is a read-only view of one conversation. It is not an approval UI: there are no approve or reject buttons. Approvals happen only in Slack, authenticated by the signing secret and `SLACK_APPROVER_IDS`.
+
+- Each action produces **one record** in the `timeline` stream: time, tool, input, rules (each labeled `CODE` or `TEXT`), the approval decision or `timed_out`, and the result (`completed`, `rejected`, `timed_out`, `refused`, `already_processed`, `in_progress` or `error`). A separate `pending` event is written when the Slack message is posted, so the operator can see the wait while it happens.
+- `GET /api/operator/[runId]` reads the namespaced stream with `getRun(runId).getReadable({ namespace: "timeline", startIndex: 0 })` and `getTailIndex()`; there is no new database.
+- The page polls every 2 seconds and stops when the run reaches a terminal status. Empty and not-found states share one message.
+- The Slack approval message and the chat both link to the panel. The absolute Slack URL comes from `APP_BASE_URL` (for example `https://plaude-agent.vercel.app`); if it is unset, the Slack button is omitted and the chat still uses a relative link.
+- The panel has **no authentication** yet and no conversation list; a run is opened from the Slack/chat link. Both are documented as next steps, not solved here.
 
 ## Mock wallet and approval rules
 
@@ -129,7 +144,7 @@ npx workflow inspect runs
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and fill in the values. Set the same six in the Vercel project (Settings → Environment Variables) and **redeploy**: Vercel does not inject new values into an existing deployment, so a running deployment keeps the old environment until the next one.
+Copy `.env.example` to `.env.local` and fill in the values. Set the same seven in the Vercel project (Settings → Environment Variables) and **redeploy**: Vercel does not inject new values into an existing deployment, so a running deployment keeps the old environment until the next one.
 
 | Variable | Purpose |
 |---|---|
@@ -139,6 +154,7 @@ Copy `.env.example` to `.env.local` and fill in the values. Set the same six in 
 | `SLACK_APPROVER_IDS` | Comma-separated Slack user IDs allowed to approve. Unset or empty means nobody can approve (fail closed) |
 | `GROQ_API_KEY` | Groq API key for the primary model (free tier: 8k tokens/minute) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the Gemini fallback |
+| `APP_BASE_URL` | Public origin used to build the **View timeline** link in Slack, for example `https://plaude-agent.vercel.app`. Unset means no link button in Slack; the chat link is relative |
 
 The primary model is Groq `openai/gpt-oss-120b` with reasoning effort low. On the same tool-call prompt it measured 543 ms and called `reverse_transaction` with the right arguments; `gemini-3.6-flash` measured 27.1 s on the same test and remains the **manual** fallback: an operator changes `PROVIDER` in `lib/model.ts`; there is no automatic failover. The Groq free tier allows 8,000 tokens per minute, so keep prompts short and reasoning low. Rate limits are caught and shown as a friendly message instead of a raw error.
 
@@ -157,22 +173,22 @@ To get a member ID, open the person's profile in Slack and choose **More → Cop
 ## Project layout
 
 ```
-app/                 Pages and Route Handlers (chat UI at /chat)
+app/                 Pages and Route Handlers (chat UI at /chat, operator panel at /operator/[runId])
 data/                Mock wallet customers and transactions
 instructions/        Plain-text agent behavior and the text rule block
 lib/                 Model, wallet, policies, rule parser, generated config, Slack helpers and types
 scripts/             Build-time agent-config generator
-workflows/           Workflow functions, tools, claims and their steps
+workflows/           Workflow functions, tools, claims, timeline and their steps
 DECISIONS.md         Architecture decisions, one entry per choice
 CLAUDE.md            Project instructions for the coding agent
 ```
 
-Next steps: the designed UI with the operator timeline (Stage 4) and tests (Stage 5). As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
+Next steps: tests (Stage 5) and, for the operator panel, a conversation list, localStorage rehydration of the chat, an explicit pending data part in the customer UI, and authentication for the panel. As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
 
 ## Notes
 
 - Mock data only. According to Groq's API policy, Groq does not train on API data. If the manual fallback is switched to Gemini, Google AI Studio's free tier may use prompts to improve its products. Never put real customer data in.
 - The free tiers have variable latency and rate limits. `lib/model.ts` is the only place to change the model; switching between Groq and Gemini is one constant. Gemini is a manual standby, not an automatic failover.
 - The brief asks for `DurableAgent`; Vercel's newer `WorkflowAgent` (`@ai-sdk/workflow`) is a possible future migration, recorded in [DECISIONS.md](./DECISIONS.md).
-- Cross-conversation claims (D26) prevent applying the same refund or reversal twice. They do not share balances between conversations: two *different* actions on one account still mutate two per-run clones. Real balances need a shared store (Stage 4+). A run cancelled in the narrow window between a mutation and its done marker could allow a retry; steps replay, so this is a terminal-cancellation edge case.
+- Cross-conversation claims (D26) prevent applying the same refund or reversal twice. They do not share balances between conversations: two *different* actions on one account still mutate two per-run clones. Real balances need a shared store (Stage 4+). A run cancelled in the narrow window between a mutation and its done marker could allow a retry; steps replay, so this is a terminal-cancellation edge case. In local development the marker is not retained across a dev-server restart (observed); the Vercel World retains it for the configured 30 days, per its documentation.
 - The system prompt is not stored in the conversation history (D25). On a five-turn test, turn 5 input went from 2,448 tokens to 993 and the AI SDK prompt-injection warning disappeared.
