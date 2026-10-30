@@ -48,6 +48,12 @@ export async function POST(request: Request) {
   const actionId = action?.action_id;
   const token = action?.value;
 
+  // URL buttons can also arrive as block_actions. They are navigation only;
+  // acknowledge so Slack does not show an error triangle.
+  if (payload.type === "block_actions" && actionId === "view_timeline") {
+    return Response.json({ ok: true });
+  }
+
   if (
     payload.type !== "block_actions" ||
     !token ||
