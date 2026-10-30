@@ -158,19 +158,19 @@ export function createAgentTools({
       }),
       execute: async ({ transaction_id, reason }) =>
         serializeAction(state, async (): Promise<ActionOutcome> => {
+          const found = findTransaction(state.wallet, transaction_id);
+          if (!found) {
+            return {
+              error: "transaction_not_found",
+              message: "No transaction with that ID was found.",
+            };
+          }
+          if (!checkOwnership(customerId, found.account.id)) return notOwner();
+
           const claim = await claimTransaction(transaction_id);
           if (claim.status !== "claimed") return alreadyHandled(claim.status);
 
           try {
-            const found = findTransaction(state.wallet, transaction_id);
-            if (!found) {
-              return {
-                error: "transaction_not_found",
-                message: "No transaction with that ID was found.",
-              };
-            }
-            if (!checkOwnership(customerId, found.account.id)) return notOwner();
-
             const transaction = found.transaction;
             if (transaction.type !== "fee") {
               return {
@@ -265,19 +265,19 @@ export function createAgentTools({
       }),
       execute: async ({ transaction_id, reason }) =>
         serializeAction(state, async (): Promise<ActionOutcome> => {
+          const found = findTransaction(state.wallet, transaction_id);
+          if (!found) {
+            return {
+              error: "transaction_not_found",
+              message: "No transaction with that ID was found.",
+            };
+          }
+          if (!checkOwnership(customerId, found.account.id)) return notOwner();
+
           const claim = await claimTransaction(transaction_id);
           if (claim.status !== "claimed") return alreadyHandled(claim.status);
 
           try {
-            const found = findTransaction(state.wallet, transaction_id);
-            if (!found) {
-              return {
-                error: "transaction_not_found",
-                message: "No transaction with that ID was found.",
-              };
-            }
-            if (!checkOwnership(customerId, found.account.id)) return notOwner();
-
             const transaction = found.transaction;
             if (transaction.type !== "transfer") {
               return {

@@ -103,7 +103,7 @@ function validateAgentInstructions(): string | null {
         : String(error);
 
     console.error(`Invalid agent instructions: ${detail}`);
-    return `Invalid agent instructions: ${detail}`;
+    return "The agent is misconfigured. Please try again later.";
   }
 }
 
