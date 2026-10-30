@@ -12,6 +12,7 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 - `workflows/approval-request.ts`: one workflow-level helper that creates the hook with a random token, posts to Slack, waits with a timeout, and returns the decision. The tools reuse it.
 - `workflows/chat.ts` and `workflows/agent-tools.ts`: a multi-turn `DurableAgent` conversation with five tools, serialized writes and wallet-owned facts.
 - `app/api/chat/route.ts`: starts a conversation or resumes one with a follow-up message, and returns the per-turn UI stream.
+- `app/api/chat/[id]/stream/route.ts`: read-only reconnect endpoint for `WorkflowChatTransport`; it replays the durable stream from `startIndex` and never resumes a hook.
 - `app/chat/page.tsx`: the minimal chat UI with a demo customer selector; `/` keeps the Stage 1 approval demo.
 - `app/api/approval/route.ts`: starts a run and returns its `runId` immediately.
 - `app/api/approval/[runId]/route.ts`: returns the run status and result for polling.
@@ -56,7 +57,7 @@ A request older than 5 minutes, or one with an invalid signature, is rejected wi
 - `customerId` is accepted only when a conversation starts; follow-ups ignore it.
 - A `429` is caught and written to the stream as a friendly assistant message.
 - `/api/chat` returns `409` with a clear message when the conversation ended or the `runId` is not an active chat.
-- Send `/done` to end a conversation. There is no GET reconnection route: a stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
+- Send `/done` to end a conversation. If the stream is cut (for example by the 300-second function limit), `WorkflowChatTransport` reconnects to `GET /api/chat/[id]/stream?startIndex=N`, which reads the durable run stream from that index using the documented pattern. The route is read-only and never resumes an approval hook.
 - The chat shows a neutral "Working on it. Some actions need a human review." while a tool runs and never says approved or rejected before the tool result. Once a run exists, a **View timeline** link opens the operator panel for that conversation.
 
 ## Operator timeline

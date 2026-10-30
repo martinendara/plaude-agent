@@ -365,7 +365,7 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - Waiting uses no compute; the run stays open while the human decides.
 - The UI must send `runId` on every follow-up.
 - `/api/chat` returns `409` with a clear message when the conversation ended or the run is not an active chat, instead of surfacing a resume error as `500`.
-- There is no GET stream reconnect route. A stream cut by the 300-second function limit is not resumed in the browser, but the workflow keeps running.
+- Stage 2 had no GET reconnect route. Stage 4 adds `GET /api/chat/[id]/stream`, which reads the durable stream from `startIndex` with `getRun().getReadable({ startIndex })` (the documented `WorkflowChatTransport` pattern) and never resumes a hook. A stream cut by the 300-second function limit is resumed in the browser while the workflow keeps running.
 - `/api/chat` has no user authentication yet; the demo exposes the run ID.
 
 ## D19. Rate limits become a friendly message, not a blank stream
