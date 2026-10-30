@@ -10,6 +10,33 @@ type SlackBlock = {
   [key: string]: unknown;
 };
 
+export type IncomingSlackBlock = {
+  type?: string;
+  [key: string]: unknown;
+};
+
+// Keep the existing message (including a decision) and remove only the
+// buttons. If Slack did not send the blocks, return null: no edit is safer
+// than erasing a decision.
+export function buildInactiveBlocks(
+  blocks: IncomingSlackBlock[] | undefined
+): IncomingSlackBlock[] | null {
+  if (!Array.isArray(blocks)) return null;
+
+  return [
+    ...blocks.filter((block) => block?.type !== "actions"),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "This request is no longer active.",
+        },
+      ],
+    },
+  ];
+}
+
 export function buildApprovalBlocks({
   token,
   request,

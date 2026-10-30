@@ -4,13 +4,21 @@ import { HookNotFoundError } from "workflow/errors";
 import type { ApprovalHookPayload } from "@/lib/approval-types";
 import { isAuthorizedApprover, parseApproverIds } from "@/lib/approvers";
 import { callSlack } from "@/lib/slack-api";
+import {
+  buildInactiveBlocks,
+  type IncomingSlackBlock,
+} from "@/lib/slack-blocks";
 import { isValidSlackRequest } from "@/lib/slack-verify";
 
 type SlackInteraction = {
   type?: string;
   channel?: { id?: string };
   user?: { id?: string; name?: string };
-  message?: { ts?: string };
+  message?: {
+    ts?: string;
+    text?: string;
+    blocks?: IncomingSlackBlock[];
+  };
   actions?: Array<{ action_id?: string; value?: string }>;
 };
 
@@ -98,6 +106,8 @@ export async function POST(request: Request) {
       await markRequestInactive({
         channelId: payload.channel?.id,
         messageTs: payload.message?.ts,
+        messageText: payload.message?.text,
+        blocks: payload.message?.blocks,
       });
 
       return Response.json({ ok: true, note: "no longer active" });
@@ -112,26 +122,25 @@ export async function POST(request: Request) {
 async function markRequestInactive({
   channelId,
   messageTs,
+  messageText,
+  blocks,
 }: {
   channelId: string | undefined;
   messageTs: string | undefined;
+  messageText: string | undefined;
+  blocks: IncomingSlackBlock[] | undefined;
 }): Promise<void> {
   if (!channelId || !messageTs) return;
+
+  const nextBlocks = buildInactiveBlocks(blocks);
+  if (!nextBlocks) return;
 
   try {
     await callSlack("chat.update", {
       channel: channelId,
       ts: messageTs,
-      text: "This request is no longer active",
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "This request is no longer active.",
-          },
-        },
-      ],
+      text: messageText ?? "This request is no longer active.",
+      blocks: nextBlocks,
     });
   } catch (error) {
     console.error("Could not mark the approval message inactive", error);
