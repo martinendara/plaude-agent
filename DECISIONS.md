@@ -403,3 +403,86 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 **Alternatives considered.** A custom SSE parser (more code for a solved problem), replacing the Stage 1 demo (loses the approval debug page), server actions (no streaming).
 
 **Consequences.** The page is minimal and will be replaced in Stage 4; no GET reconnect route exists, so a cut stream surfaces as an error in the UI; the run ID lives in React state and is lost on refresh (Stage 4 can persist it).
+
+## D22. `instructions/agent.md` is the source of truth, compiled at build time
+
+**Context.** The brief asks for base plain-text instructions that describe when a human must decide. Stage 2 kept the prompt in `lib/agent-instructions.ts`, which is not plain text and forces a code change. The Workflow DevKit workflow body must be deterministic and cannot do I/O (D3), and Vercel only ships files that its tracer sees; a runtime `fs.readFile` of `instructions/agent.md` from a step is not guaranteed to find the file in production. No new dependency may be added without asking.
+
+**Decision.** `instructions/agent.md` is the only file an editor touches. `scripts/generate-agent-config.mts` reads and validates it at build time and writes `lib/generated/agent-config.ts` (committed) with `AGENT_PROMPT` (the markdown without the machine-readable rules block) and `TEXT_RULES`. `npm run predev` and `npm run prebuild` regenerate the module. The workflow imports it statically, so the text travels in the bundle. Node 22's built-in type stripping runs the script, so no `tsx` or loader is added. `allowImportingTsExtensions` is enabled because the script imports `../lib/agent-rules.ts`.
+
+**Problem solved:** the instructions are editable without touching code, and they deploy reliably without a new dependency or untraced runtime files.
+
+**Without it:** the prompt stays a TypeScript string (the brief is not met), or the app reads the file at runtime and fails on Vercel when the asset is not in the step bundle. A new loader dependency would also have to be justified and approved.
+
+**Alternatives considered.** Read the file in a step (`fs.readFile`): conceptually correct, but asset tracing across the Workflow step bundle is not documented or verified. `raw-loader` or a Turbopack rule: a new dependency. Read from `public/` with `fetch`: a network call and a publicly served prompt. Keep the prompt in a `.ts` file: not plain text.
+
+**Consequences.** Editing the file requires `npm run generate:agent` or a dev restart, and a deploy for production. The generated file must not be hand-edited; it says so in its header. A build that bypasses npm scripts uses the committed module, which is valid but may be stale. The prose and the rules block are separated: the model never sees the rule syntax, which saves tokens on Groq's 8k/minute free tier.
+
+## D23. A constrained, additive rule DSL parsed in code
+
+**Context.** The text must be able to add an approval that the code does not have (the Stage 3 demo: raising a limit on a locked account), while the hard rules stay in code (D13, D17). Parsing by the model would make the rule nondeterministic and injectable. A general expression language would be hard to audit and test.
+
+**Decision.** `agent.md` contains one fenced `rules` block. The grammar is deliberately small:
+
+```
+rule <tool> when <fact> is <literal> reason "<label>"
+rule <tool> when <fact> > <number> reason "<label>"
+```
+
+Tools: `refund_fee`, `reverse_transaction`, `raise_limit`, `unlock_account`. Facts: `account.locked`, `account.lock_reason`, `amount_usd`, `recipient_received`, `current_limit_usd`, `new_limit_usd`, each allowed only on the tools where it exists. There is no `and`, `or`, negation, arithmetic, `allow`, or `unless`: two conditions are two rules, and evaluation is OR. Rules compile to `extraRules`, which `evaluateGuardrails` already combines with OR, so text can add reasons and never clear a code reason. The Slack message shows the text rule's label.
+
+**Problem solved:** an editor can add or lower an approval threshold with one line, and the code still decides deterministically.
+
+**Without it:** editing the text only changes the model's prose, which is advisory; the Stage 3 checkpoint ("editing the text changes behavior without code changes") could not be demonstrated with an actual approval.
+
+**Alternatives considered.** Prose-only rules: no guarantee. Model-parsed rules: nondeterministic and a prompt-injection surface. A full expression language or JSONLogic: more power than the demo needs and much more surface to test.
+
+**Consequences.** A new policy dimension needs a new fact in code; the language does not grow by itself. Thresholds are not repeated in the prose, so one source of truth. `PolicyContext` now carries generic `locked` and `lockReason`; D20's `accountLockedForFraud` remains.
+
+## D24. Fail closed on invalid instructions, at build and at runtime
+
+**Context.** A rule that is silently skipped is a bypass: the editor believes an approval is configured and the code does not ask for it. D10 established the same principle for the approver allowlist. A literal "the app refuses to start" is not achievable on Vercel serverless, where every instance cold-starts and there is no reliable startup hook.
+
+**Decision.** The generator validates syntax, tool, fact, fact/tool compatibility, literal type, USD format, duplicate rules, block count and block closure. Any error prints `instructions/agent.md:<line>: <message>` and exits 1, so `npm run build` and `npm run deploy` never produce a bundle with partial rules. At runtime, `compileTextRules` re-validates the generated data; the chat route returns a `500` with the same `file:line` message before starting a run, and the workflow throws a `FatalError` as a second barrier. A missing `rules` block is valid and means zero extra rules; a missing file, an unknown symbol, or an unclosed block is fatal.
+
+**Problem solved:** an invalid edit cannot silently weaken the workflow, and the failure names the exact line.
+
+**Without it:** a typo such as `account.bloqued` disables the intended approval without any visible symptom until money moves.
+
+**Alternatives considered.** Skip unknown lines with a warning: the exact failure mode this design avoids. Validate only at runtime: the bad file can deploy, and the stream can hang. Validate only at build: a hand-edited generated module bypasses it. Both layers are used.
+
+**Consequences.** A broken file blocks development and deployment until fixed, by design. Runtime validation adds a few milliseconds per run. The literal "refuses to start" is replaced by "refuses to build/deploy" plus "refuses to run with a clear error", which is enforceable.
+
+## D25. The conversation history excludes the system message
+
+**Context.** The AI SDK warns on the second turn that system messages in `messages` can enable prompt injection. `DurableAgent` prepends the `instructions` as a system message, returns the full conversation prompt in `result.messages`, and the chat loop fed that back on the next turn. The prompt therefore contained a second copy of the system prompt, then a third, and so on.
+
+**Decision.** `workflows/chat.ts` stores `result.messages.filter((message) => message.role !== "system")`. `DurableAgent` re-adds `instructions` on every call.
+
+**Problem solved:** removes the warning, removes the duplicated prompt and keeps token growth proportional to the conversation.
+
+**Without it:** every turn paid for an extra copy of the system prompt. Measured on a five-turn conversation with `openai/gpt-oss-120b`: input tokens went 808 → 2,448 before the fix and 808 → 993 after it (turn 5, about 59% fewer input tokens); the warning appeared on turns 2–5 before and disappeared after.
+
+**Alternatives considered.** `allowSystemInMessages: true`: silences the warning but keeps the duplication and the injection surface. Passing `system` instead of `instructions`: same result. Removing `instructions`: loses the prompt.
+
+**Consequences.** The history contains only user, assistant and tool messages. A future migration to `WorkflowAgent` should keep the same invariant.
+
+## D26. One transaction action at a time across conversations, with a retained done marker
+
+**Context.** The wallet lives in a per-run clone loaded from `data/customers.json` (`lib/wallet.ts:59`, `workflows/chat.ts:39`). Nothing writes the JSON, and the action queue is per conversation (`workflows/agent-tools.ts:25-58`). Two conversations could refund the same fee twice; even sequentially, a new conversation starts from the pristine data and could refund it again. The tool already re-validated at apply time, but only against its own clone.
+
+**Decision.** `refund_fee` and `reverse_transaction` claim the transaction before reading the wallet:
+
+1. Create a lock hook with the custom token `wallet-tx:<transactionId>` and await `getConflict()`. Custom tokens are globally unique while active and registration is atomic (Workflow DevKit docs: run idempotency and `createHook`). If the token is taken, another active run owns it.
+2. While holding the lock, look up `wallet-tx:<transactionId>:done`. If it exists, release the lock and return `already_processed`. If the lock was taken and no marker exists, return `in_progress`.
+3. Do the work. On success, create the done hook with `experimental_minRetention: "30d"`, then release the lock. On rejection, timeout, validation error or any thrown error, release the lock and do not create the marker.
+
+The ordering matters: the done marker is created **before** the lock is released, so a run that acquires the lock afterwards is guaranteed to see the marker.
+
+**Problem solved:** exactly one action is applied per transaction, even across parallel or later conversations. The agent reports "already processed" or "being handled" and never claims a second refund.
+
+**Without it:** two conversations can each refund `TX-1041` and add the amount to their own clone. The second conversation can also do it after the first one ends, because the JSON never changed.
+
+**Alternatives considered.** An in-memory mutex: does not cross serverless instances. A database or KV store with compare-and-set: the correct long-term design, but new infrastructure and cost, outside the zero-spend rule. A single claim hook with 30-day retention: if the holder fails or is cancelled, the token stays reserved for 30 days and blocks legitimate retries. The two-hook design releases the lock when the run ends (Workflow DevKit disposes hooks when a workflow ends) and retains only the done marker after success.
+
+**Consequences.** A successful transaction is marked for 30 days on the free tier (Vercel caps `experimental_minRetention` at 30 days). Rejected or timed-out attempts release the lock, so they can be retried. A run cancelled in the narrow window between the mutation and the done-marker creation could allow a later attempt: steps are durable and replay, so this requires a terminal cancellation at that exact point; documented as a known limitation. The claim does not share wallet balances: two different actions on one account still mutate two clones. That remains a Stage 4+ concern (shared store). Waiting runs use no compute, and Hobby's 50,000 events/1 GB written allowances cover the few extra hook events; Workflow Data Retained is not billed on Hobby.

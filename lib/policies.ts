@@ -23,6 +23,8 @@ export type PolicyContext = {
   customerId: string;
   customerName: string;
   accountLockedForFraud: boolean;
+  locked: boolean;
+  lockReason: LockReason;
 };
 
 export type ExtraPolicyRule = (

@@ -2,7 +2,7 @@
 
 Customer support agent for Acme Wallet (a mock digital wallet), built for the Plaude engineering challenge.
 
-**Current stage:** Stage 2 in progress — the tools, the multi-turn chat API and the minimal `/chat` page are built. Stage 3 (plain-text instructions) and the designed UI (Stage 4) come next.
+**Current stage:** Stage 3 complete — the agent behavior lives in `instructions/agent.md`, the text can add approval rules, and transaction actions are claimed across conversations. Stage 4 (the designed UI and the operator timeline) comes next.
 
 ## What exists now
 
@@ -20,7 +20,12 @@ Customer support agent for Acme Wallet (a mock digital wallet), built for the Pl
 - `workflows/hello.ts` and `app/api/hello/route.ts`: the original one-step smoke test.
 - `lib/model.ts`: the single place where the model is chosen. Primary: Groq `openai/gpt-oss-120b` with low reasoning; manual fallback: `gemini-3.6-flash`.
 - `data/customers.json` and `lib/wallet.ts`: three mock customers with balances, limits, locks and transactions. Amounts are integer cents; state mutations are pure and idempotent.
-- `lib/policies.ts`: pure approval rules and the ownership check. The rules live in code; plain text (Stage 3) can only add reasons.
+- `lib/policies.ts`: pure approval rules and the ownership check. The code rules are immutable; text rules can only add reasons.
+- `instructions/agent.md`: the plain-text source of the agent behavior and the optional `rules` block.
+- `lib/agent-rules.ts`: the deterministic parser, validator and compiler for text rules.
+- `scripts/generate-agent-config.mts`: reads `agent.md`, fails the build on invalid rules, and writes the committed `lib/generated/agent-config.ts`.
+- `workflows/transaction-claims.ts` and `workflows/claim-steps.ts`: cross-conversation claims for refunds and reversals (D26).
+- `workflows/agent-tools.ts`: the five tools, the serialized per-conversation queue, and the claims.
 
 ## How the approval flow works
 
@@ -69,7 +74,25 @@ Amounts are stored as integer cents. `lib/wallet.ts` finds accounts and transact
 
 `raise_limit` also rejects non-positive limits and limits that do not exceed the current one, with a clear `WalletError`.
 
-Any action on an account or transaction that does not belong to the session customer is a hard block: it never reaches Slack and no approver can allow it. `extraRules` is the Stage 3 extension point: text rules can add reasons, never remove the code rules.
+Any action on an account or transaction that does not belong to the session customer is a hard block: it never reaches Slack and no approver can allow it. `extraRules` is now wired: the text rules compile to extra rules that can add reasons, never remove the code rules.
+
+## Plain-text instructions and rules
+
+`instructions/agent.md` is the source of truth for behavior: identity, facts, tool-result states, the scenarios (refunds, reversals, limit increases, unlocks, ambiguous requests, out of scope, social engineering) and tone. Edit it, then run `npm run generate:agent` (or restart `npm run dev`, which runs it automatically). The generated `lib/generated/agent-config.ts` is committed so a fresh clone type-checks; do not edit it by hand.
+
+The optional fenced `rules` block at the end of the file is read by code, not by the model. The reduced grammar is:
+
+```
+rule <tool> when <fact> is <literal> reason "<label>"
+rule <tool> when <fact> > <number> reason "<label>"
+```
+
+- Tools: `refund_fee`, `reverse_transaction`, `raise_limit`, `unlock_account`.
+- Facts: `account.locked`, `account.lock_reason`, `amount_usd`, `recipient_received`, `current_limit_usd`, `new_limit_usd` (each only on tools where it exists).
+- No `and`, `or`, negation, arithmetic or allow rules. Two conditions are two rules; evaluation is OR, so text can only add approvals.
+- An invalid line fails the build with `instructions/agent.md:<line>: <message>`; at runtime the route returns `500` and the workflow throws a `FatalError`. A rule is never silently ignored. A missing `rules` block is valid (zero extra rules).
+
+Demo: the active line is `rule raise_limit when account.locked is true reason "Raising the limit on a locked account"`. With it, Ana's USD 500 → 700 request opens a Slack approval. Comment it out, regenerate, and the same request completes without approval. `request_human_input` (a Slack reply for ambiguous requests) is still future work; for now the agent asks one clarifying question and does not move money.
 
 ## Run locally
 
@@ -79,6 +102,8 @@ Requirements: Node.js 22+ and npm.
 npm install
 npm run dev
 ```
+
+The dev and build scripts regenerate the agent config first. To edit the instructions while the server is running, run `npm run generate:agent` and restart the workflow/dev server.
 
 Open <http://localhost:3000/chat> for the agent chat, or <http://localhost:3000> for the Stage 1 approval demo.
 
@@ -134,16 +159,20 @@ To get a member ID, open the person's profile in Slack and choose **More → Cop
 ```
 app/                 Pages and Route Handlers (chat UI at /chat)
 data/                Mock wallet customers and transactions
-lib/                 Model, wallet, policies, money, Slack helpers and types
-workflows/           Workflow functions, tools and their steps
+instructions/        Plain-text agent behavior and the text rule block
+lib/                 Model, wallet, policies, rule parser, generated config, Slack helpers and types
+scripts/             Build-time agent-config generator
+workflows/           Workflow functions, tools, claims and their steps
 DECISIONS.md         Architecture decisions, one entry per choice
 CLAUDE.md            Project instructions for the coding agent
 ```
 
-Next steps: `instructions/` (Stage 3) and the designed UI with the operator timeline (Stage 4). As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
+Next steps: the designed UI with the operator timeline (Stage 4) and tests (Stage 5). As a next safety step, put a prompt-injection filter (for example `meta-llama/llama-prompt-guard-2-86m`, available on Groq) in front of the agent. Deferred from Stage 2 and documented in DECISIONS: `request_human_input` with a Slack modal, and reconnecting to a workflow stream that was cut by the 300-second function limit.
 
 ## Notes
 
 - Mock data only. According to Groq's API policy, Groq does not train on API data. If the manual fallback is switched to Gemini, Google AI Studio's free tier may use prompts to improve its products. Never put real customer data in.
 - The free tiers have variable latency and rate limits. `lib/model.ts` is the only place to change the model; switching between Groq and Gemini is one constant. Gemini is a manual standby, not an automatic failover.
 - The brief asks for `DurableAgent`; Vercel's newer `WorkflowAgent` (`@ai-sdk/workflow`) is a possible future migration, recorded in [DECISIONS.md](./DECISIONS.md).
+- Cross-conversation claims (D26) prevent applying the same refund or reversal twice. They do not share balances between conversations: two *different* actions on one account still mutate two per-run clones. Real balances need a shared store (Stage 4+). A run cancelled in the narrow window between a mutation and its done marker could allow a retry; steps replay, so this is a terminal-cancellation edge case.
+- The system prompt is not stored in the conversation history (D25). On a five-turn test, turn 5 input went from 2,448 tokens to 993 and the AI SDK prompt-injection warning disappeared.

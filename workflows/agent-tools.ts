@@ -7,6 +7,7 @@ import { dollarsToCents, formatUsd } from "@/lib/money";
 import {
   checkOwnership,
   evaluateGuardrails,
+  type ExtraPolicyRule,
   type PolicyContext,
   type PolicyReason,
 } from "@/lib/policies";
@@ -20,6 +21,7 @@ import {
   WalletError,
 } from "@/lib/wallet";
 import { requestApproval } from "@/workflows/approval-request";
+import { claimTransaction } from "@/workflows/transaction-claims";
 import { applyWalletMutation } from "@/workflows/wallet-steps";
 
 export type SessionState = {
@@ -43,6 +45,8 @@ type ActionOutcome =
   | { status: "rejected"; approver: Approver; message: string }
   | { status: "timed_out"; message: string }
   | { status: "refused"; message: string }
+  | { status: "already_processed"; message: string }
+  | { status: "in_progress"; message: string }
   | { error: string; message: string };
 
 function serializeAction<T>(
@@ -69,6 +73,22 @@ function walletError(error: unknown): ActionOutcome {
   throw error;
 }
 
+function alreadyHandled(
+  status: "already_processed" | "in_progress"
+): ActionOutcome {
+  return status === "already_processed"
+    ? {
+        status: "already_processed",
+        message:
+          "That transaction was already processed in another conversation. No new action was taken.",
+      }
+    : {
+        status: "in_progress",
+        message:
+          "Another conversation is already handling that transaction. No new action was taken.",
+      };
+}
+
 function notOwner(): ActionOutcome {
   return {
     status: "refused",
@@ -87,13 +107,16 @@ export function createAgentTools({
   state,
   customerId,
   customerName,
-}: ToolContext) {
+  extraRules,
+}: ToolContext & { extraRules: ExtraPolicyRule[] }) {
   function contextFor(account: WalletAccount): PolicyContext {
     return {
       customerId,
       customerName,
       accountLockedForFraud:
         account.lock.locked && account.lock.reason === "suspected_fraud",
+      locked: account.lock.locked,
+      lockReason: account.lock.reason,
     };
   }
 
@@ -135,59 +158,80 @@ export function createAgentTools({
       }),
       execute: async ({ transaction_id, reason }) =>
         serializeAction(state, async (): Promise<ActionOutcome> => {
-          const found = findTransaction(state.wallet, transaction_id);
-          if (!found) {
-            return {
-              error: "transaction_not_found",
-              message: "No transaction with that ID was found.",
-            };
-          }
-          if (!checkOwnership(customerId, found.account.id)) return notOwner();
+          const claim = await claimTransaction(transaction_id);
+          if (claim.status !== "claimed") return alreadyHandled(claim.status);
 
-          const transaction = found.transaction;
-          if (transaction.type !== "fee") {
-            return {
-              error: "not_a_fee",
-              message: "That transaction is not a fee.",
-            };
-          }
-          if (transaction.feeRefunded) {
-            return {
-              error: "already_done",
-              message: "That fee was already refunded.",
-            };
-          }
-
-          const amountCents = transaction.amountCents;
-          const { requiresApproval, reasons } = evaluateGuardrails(
-            { type: "refund_fee", amountCents },
-            contextFor(found.account)
-          );
-
-          if (requiresApproval) {
-            const decision = await requestApproval({
-              request: {
-                summary: `Refund fee ${transaction.id}`,
-                customerName,
-                amountCents,
-                rule: reasonsLabel(reasons),
-                details: `${transaction.description}. ${customerSays(reason)}`,
-              },
-              timeoutMs: APPROVAL_TIMEOUT_MS,
-            });
-
-            if (decision.status === "rejected") {
+          try {
+            const found = findTransaction(state.wallet, transaction_id);
+            if (!found) {
               return {
-                status: "rejected",
-                approver: decision.approver,
-                message: "The refund was rejected; no money moved.",
+                error: "transaction_not_found",
+                message: "No transaction with that ID was found.",
               };
             }
-            if (decision.status === "timed_out") {
+            if (!checkOwnership(customerId, found.account.id)) return notOwner();
+
+            const transaction = found.transaction;
+            if (transaction.type !== "fee") {
               return {
-                status: "timed_out",
-                message:
-                  "No approver answered in time; nothing was refunded.",
+                error: "not_a_fee",
+                message: "That transaction is not a fee.",
+              };
+            }
+            if (transaction.feeRefunded) {
+              return {
+                error: "already_done",
+                message: "That fee was already refunded.",
+              };
+            }
+
+            const amountCents = transaction.amountCents;
+            const { requiresApproval, reasons } = evaluateGuardrails(
+              { type: "refund_fee", amountCents },
+              contextFor(found.account),
+              extraRules
+            );
+
+            if (requiresApproval) {
+              const decision = await requestApproval({
+                request: {
+                  summary: `Refund fee ${transaction.id}`,
+                  customerName,
+                  amountCents,
+                  rule: reasonsLabel(reasons),
+                  details: `${transaction.description}. ${customerSays(reason)}`,
+                },
+                timeoutMs: APPROVAL_TIMEOUT_MS,
+              });
+
+              if (decision.status === "rejected") {
+                return {
+                  status: "rejected",
+                  approver: decision.approver,
+                  message: "The refund was rejected; no money moved.",
+                };
+              }
+              if (decision.status === "timed_out") {
+                return {
+                  status: "timed_out",
+                  message:
+                    "No approver answered in time; nothing was refunded.",
+                };
+              }
+
+              await apply(state, {
+                type: "refund_fee",
+                customerId,
+                transactionId: transaction.id,
+                amountCents,
+              });
+
+              await claim.markProcessed();
+              return {
+                status: "completed",
+                approval: "approved",
+                approver: decision.approver,
+                message: `Refunded ${formatUsd(amountCents)} for ${transaction.id}.`,
               };
             }
 
@@ -198,26 +242,15 @@ export function createAgentTools({
               amountCents,
             });
 
+            await claim.markProcessed();
             return {
               status: "completed",
-              approval: "approved",
-              approver: decision.approver,
+              approval: "not_required",
               message: `Refunded ${formatUsd(amountCents)} for ${transaction.id}.`,
             };
+          } finally {
+            claim.release();
           }
-
-          await apply(state, {
-            type: "refund_fee",
-            customerId,
-            transactionId: transaction.id,
-            amountCents,
-          });
-
-          return {
-            status: "completed",
-            approval: "not_required",
-            message: `Refunded ${formatUsd(amountCents)} for ${transaction.id}.`,
-          };
         }).catch(walletError),
     }),
 
@@ -232,63 +265,83 @@ export function createAgentTools({
       }),
       execute: async ({ transaction_id, reason }) =>
         serializeAction(state, async (): Promise<ActionOutcome> => {
-          const found = findTransaction(state.wallet, transaction_id);
-          if (!found) {
-            return {
-              error: "transaction_not_found",
-              message: "No transaction with that ID was found.",
-            };
-          }
-          if (!checkOwnership(customerId, found.account.id)) return notOwner();
+          const claim = await claimTransaction(transaction_id);
+          if (claim.status !== "claimed") return alreadyHandled(claim.status);
 
-          const transaction = found.transaction;
-          if (transaction.type !== "transfer") {
-            return {
-              error: "not_a_transfer",
-              message: "That transaction is not a transfer.",
-            };
-          }
-          if (transaction.status === "reversed") {
-            return {
-              error: "already_done",
-              message: "That transfer was already reversed.",
-            };
-          }
-
-          const amountCents = transaction.amountCents;
-          const { requiresApproval, reasons } = evaluateGuardrails(
-            {
-              type: "reverse_transaction",
-              amountCents,
-              recipientReceived: transaction.recipientReceived ?? true,
-            },
-            contextFor(found.account)
-          );
-
-          if (requiresApproval) {
-            const decision = await requestApproval({
-              request: {
-                summary: `Reverse transfer ${transaction.id}`,
-                customerName,
-                amountCents,
-                rule: reasonsLabel(reasons),
-                details: `${transaction.description}. ${customerSays(reason)}`,
-              },
-              timeoutMs: APPROVAL_TIMEOUT_MS,
-            });
-
-            if (decision.status === "rejected") {
+          try {
+            const found = findTransaction(state.wallet, transaction_id);
+            if (!found) {
               return {
-                status: "rejected",
-                approver: decision.approver,
-                message: "The reversal was rejected; no money moved.",
+                error: "transaction_not_found",
+                message: "No transaction with that ID was found.",
               };
             }
-            if (decision.status === "timed_out") {
+            if (!checkOwnership(customerId, found.account.id)) return notOwner();
+
+            const transaction = found.transaction;
+            if (transaction.type !== "transfer") {
               return {
-                status: "timed_out",
-                message:
-                  "No approver answered in time; nothing was reversed.",
+                error: "not_a_transfer",
+                message: "That transaction is not a transfer.",
+              };
+            }
+            if (transaction.status === "reversed") {
+              return {
+                error: "already_done",
+                message: "That transfer was already reversed.",
+              };
+            }
+
+            const amountCents = transaction.amountCents;
+            const { requiresApproval, reasons } = evaluateGuardrails(
+              {
+                type: "reverse_transaction",
+                amountCents,
+                recipientReceived: transaction.recipientReceived ?? true,
+              },
+              contextFor(found.account),
+              extraRules
+            );
+
+            if (requiresApproval) {
+              const decision = await requestApproval({
+                request: {
+                  summary: `Reverse transfer ${transaction.id}`,
+                  customerName,
+                  amountCents,
+                  rule: reasonsLabel(reasons),
+                  details: `${transaction.description}. ${customerSays(reason)}`,
+                },
+                timeoutMs: APPROVAL_TIMEOUT_MS,
+              });
+
+              if (decision.status === "rejected") {
+                return {
+                  status: "rejected",
+                  approver: decision.approver,
+                  message: "The reversal was rejected; no money moved.",
+                };
+              }
+              if (decision.status === "timed_out") {
+                return {
+                  status: "timed_out",
+                  message:
+                    "No approver answered in time; nothing was reversed.",
+                };
+              }
+
+              await apply(state, {
+                type: "reverse_transaction",
+                customerId,
+                transactionId: transaction.id,
+              });
+
+              await claim.markProcessed();
+              return {
+                status: "completed",
+                approval: "approved",
+                approver: decision.approver,
+                message: `Reversed ${formatUsd(amountCents)} for ${transaction.id}.`,
               };
             }
 
@@ -298,25 +351,15 @@ export function createAgentTools({
               transactionId: transaction.id,
             });
 
+            await claim.markProcessed();
             return {
               status: "completed",
-              approval: "approved",
-              approver: decision.approver,
+              approval: "not_required",
               message: `Reversed ${formatUsd(amountCents)} for ${transaction.id}.`,
             };
+          } finally {
+            claim.release();
           }
-
-          await apply(state, {
-            type: "reverse_transaction",
-            customerId,
-            transactionId: transaction.id,
-          });
-
-          return {
-            status: "completed",
-            approval: "not_required",
-            message: `Reversed ${formatUsd(amountCents)} for ${transaction.id}.`,
-          };
         }).catch(walletError),
     }),
 
@@ -363,7 +406,8 @@ export function createAgentTools({
               currentLimitCents: account.dailyLimitCents,
               newLimitCents,
             },
-            contextFor(account)
+            contextFor(account),
+            extraRules
           );
 
           if (requiresApproval) {
@@ -442,7 +486,8 @@ export function createAgentTools({
 
           const { requiresApproval, reasons } = evaluateGuardrails(
             { type: "unlock_account", lockReason: account.lock.reason },
-            contextFor(account)
+            contextFor(account),
+            extraRules
           );
 
           if (requiresApproval) {

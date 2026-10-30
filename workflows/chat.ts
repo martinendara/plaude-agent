@@ -1,9 +1,11 @@
 import { DurableAgent } from "@workflow/ai/agent";
 import type { ModelMessage, UIMessageChunk } from "ai";
-import { getWritable, getWorkflowMetadata } from "workflow";
+import { FatalError, getWritable, getWorkflowMetadata } from "workflow";
 
-import { AGENT_INSTRUCTIONS } from "@/lib/agent-instructions";
+import { AgentRuleError, compileTextRules } from "@/lib/agent-rules";
+import { AGENT_PROMPT, TEXT_RULES } from "@/lib/generated/agent-config";
 import { friendlyAgentError } from "@/lib/model-errors";
+import type { ExtraPolicyRule } from "@/lib/policies";
 import { getModel, MODEL_PROVIDER_OPTIONS } from "@/lib/model";
 import { findAccount, loadWallet } from "@/lib/wallet";
 import {
@@ -36,6 +38,19 @@ export async function chatWorkflow({
     throw new Error("Chat hook token is already in use");
   }
 
+  let extraRules: ExtraPolicyRule[];
+
+  try {
+    extraRules = compileTextRules(TEXT_RULES);
+  } catch (error) {
+    const reason =
+      error instanceof AgentRuleError
+        ? `instructions/agent.md:${error.line}: ${error.message}`
+        : String(error);
+
+    throw new FatalError(`Invalid agent instructions: ${reason}`);
+  }
+
   const wallet = loadWallet();
   const account = findAccount(wallet, customerId);
 
@@ -49,11 +64,12 @@ export async function chatWorkflow({
     state,
     customerId,
     customerName: account.name,
+    extraRules,
   });
   const agent = new DurableAgent({
     model: getModel,
     tools,
-    instructions: AGENT_INSTRUCTIONS,
+    instructions: AGENT_PROMPT,
     providerOptions: MODEL_PROVIDER_OPTIONS,
   });
   const writable = getWritable<UIMessageChunk>();
@@ -76,7 +92,12 @@ export async function chatWorkflow({
         maxSteps: 8,
       });
 
-      messages = result.messages;
+      // DurableAgent returns the system prompt it prepended; sending it back
+      // inside `messages` duplicates it every turn and triggers the AI SDK
+      // prompt-injection warning. `instructions` re-adds it on each call.
+      messages = result.messages.filter(
+        (message) => message.role !== "system"
+      );
     } catch (error) {
       console.error("Agent turn failed", error);
       const fallback = friendlyAgentError(error);

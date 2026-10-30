@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "generate:agent": "node --experimental-strip-types scripts/generate-agent-config.mts",
+    "predev": "npm run generate:agent",
+    "prebuild": "npm run generate:agent",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

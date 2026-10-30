@@ -6,6 +6,8 @@ import {
 import { getRun, start } from "workflow/api";
 import { HookNotFoundError } from "workflow/errors";
 
+import { AgentRuleError, compileTextRules } from "@/lib/agent-rules";
+import { TEXT_RULES } from "@/lib/generated/agent-config";
 import { findAccount, loadWallet } from "@/lib/wallet";
 import { chatWorkflow } from "@/workflows/chat";
 import { chatMessageHook } from "@/workflows/chat-hooks";
@@ -17,6 +19,11 @@ type ChatBody = {
 };
 
 export async function POST(request: Request) {
+  const instructionsError = validateAgentInstructions();
+  if (instructionsError) {
+    return Response.json({ error: instructionsError }, { status: 500 });
+  }
+
   const body = (await request.json()) as ChatBody;
   const message = lastUserText(body.messages);
 
@@ -83,6 +90,21 @@ export async function POST(request: Request) {
     stream,
     headers: { "x-workflow-run-id": run.runId },
   });
+}
+
+function validateAgentInstructions(): string | null {
+  try {
+    compileTextRules(TEXT_RULES);
+    return null;
+  } catch (error) {
+    const detail =
+      error instanceof AgentRuleError
+        ? `instructions/agent.md:${error.line}: ${error.message}`
+        : String(error);
+
+    console.error(`Invalid agent instructions: ${detail}`);
+    return `Invalid agent instructions: ${detail}`;
+  }
 }
 
 function conversationEnded(): Response {
