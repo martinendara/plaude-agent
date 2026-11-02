@@ -16,12 +16,12 @@ export type IncomingSlackBlock = {
 };
 
 // Keep the existing message (including a decision) and remove only the
-// buttons. If Slack did not send the blocks, return null: no edit is safer
-// than erasing a decision.
+// buttons. If Slack sent no blocks (missing or empty), return null: no edit
+// is safer than erasing a decision we cannot see.
 export function buildInactiveBlocks(
   blocks: IncomingSlackBlock[] | undefined
 ): IncomingSlackBlock[] | null {
-  if (!Array.isArray(blocks)) return null;
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
 
   return [
     ...blocks.filter((block) => block?.type !== "actions"),

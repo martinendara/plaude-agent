@@ -67,6 +67,10 @@ test("returns null when Slack did not send blocks", () => {
   assert.equal(buildInactiveBlocks(undefined), null);
 });
 
+test("returns null when the block array is empty", () => {
+  assert.equal(buildInactiveBlocks([]), null);
+});
+
 test("does not mutate the received blocks", () => {
   const blocks: IncomingSlackBlock[] = [
     approvedSection,
