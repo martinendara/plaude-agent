@@ -6,15 +6,26 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 
 export async function resolve(specifier, context, nextResolve) {
-  if (specifier.startsWith("@/")) {
-    const relative = specifier.slice(2);
-    const target = relative.endsWith(".ts") ? relative : `${relative}.ts`;
+  const resolved = specifier.startsWith("@/")
+    ? {
+        url: pathToFileURL(
+          join(
+            root,
+            specifier.slice(2).endsWith(".ts")
+              ? specifier.slice(2)
+              : `${specifier.slice(2)}.ts`
+          )
+        ).href,
+        shortCircuit: true,
+      }
+    : await nextResolve(specifier, context);
 
+  if (resolved.url.endsWith(".json")) {
     return {
-      url: pathToFileURL(join(root, target)).href,
-      shortCircuit: true,
+      ...resolved,
+      importAttributes: { ...resolved.importAttributes, type: "json" },
     };
   }
 
-  return nextResolve(specifier, context);
+  return resolved;
 }
