@@ -518,3 +518,13 @@ The ordering matters: the done marker is created **before** the lock is released
 - A chat run stays `running` while the conversation is open, so polling continues until `/done` or the run ends. The polling cost is small on Hobby but is not free; the page stops on terminal status and does not load-test.
 - One record per action is deliberately less detailed than a full event log: intermediate model text is not part of the operator timeline.
 - `pending` is a single extra event, so an operator sees the wait before the action record closes.
+
+## D28. Retiring a stale approval message keeps the recorded decision
+
+**Context.** A click can reach `/api/slack/interactions` after the hook was already resolved or disposed, for example a double click or a click on an outdated message. Replacing the whole message with a generic "no longer active" section would erase who approved or rejected it.
+
+**Decision.** `lib/slack-blocks.ts` exposes `buildInactiveBlocks(blocks)`. It keeps every block from the Slack payload except `type: "actions"` (where the buttons live), appends one context block with "This request is no longer active.", and returns `null` when the payload has no blocks so the route does not edit the message at all. The route sends the payload's original `text` back to `chat.update` as the fallback text.
+
+**Known limit.** Slack sends the message blocks as that client currently displays them. If an approver clicks from a client that has not received the earlier `chat.update` carrying the decision, the payload can be the outdated version and the rewrite would omit "Approved by…". It is improbable (the decision update normally arrives before the click) and the decision still remains in the read-only operator panel, which does not depend on the Slack message.
+
+**Consequences.** A resolved message keeps its decision text and loses only the actionable buttons; when Slack sends no blocks, the route leaves the message untouched rather than risking an erasure. The function is pure and is covered by the Stage 5 tests.
