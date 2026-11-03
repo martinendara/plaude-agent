@@ -2,8 +2,8 @@ import { resumeHook } from "workflow/api";
 import { HookNotFoundError } from "workflow/errors";
 
 import type { ApprovalHookPayload } from "@/lib/approval-types";
-import { isAuthorizedApprover, parseApproverIds } from "@/lib/approvers";
-import { callSlack } from "@/lib/slack-api";
+import { authorizeApprover, parseApproverIds } from "@/lib/approvers";
+import { callSlack, isSlackChannelMember } from "@/lib/slack-api";
 import {
   buildInactiveBlocks,
   type IncomingSlackBlock,
@@ -73,16 +73,31 @@ export async function POST(request: Request) {
 
   const userId = payload.user?.id;
   const approverIds = parseApproverIds(process.env.SLACK_APPROVER_IDS);
+  const approvalsChannelId = process.env.SLACK_APPROVALS_CHANNEL_ID;
 
-  if (approverIds.length === 0) {
+  if (approverIds.length === 0 && !approvalsChannelId) {
     console.error(
-      "SLACK_APPROVER_IDS is missing or empty: no Slack user can approve. The approval hook was not resumed."
+      "SLACK_APPROVER_IDS is empty and SLACK_APPROVALS_CHANNEL_ID is missing: no Slack user can approve. The approval hook was not resumed."
     );
   }
 
-  if (!isAuthorizedApprover(userId, approverIds)) {
+  const decision = await authorizeApprover({
+    userId,
+    allowedIds: approverIds,
+    channelId: approvalsChannelId,
+    isChannelMember: (id, channel) =>
+      isSlackChannelMember(id, channel).catch((error) => {
+        console.error(
+          "Slack channel membership check failed. The click is refused.",
+          error
+        );
+        throw error;
+      }),
+  });
+
+  if (!decision.authorized) {
     console.warn(
-      `Rejected approval action from unauthorized Slack user ${userId ?? "unknown"}. The hook is still waiting.`
+      `Rejected approval action from unauthorized Slack user ${userId ?? "unknown"} (${decision.reason}). The hook is still waiting.`
     );
 
     await notifyNotAuthorized({ channelId: payload.channel?.id, userId });
@@ -136,12 +151,16 @@ async function markRequestInactive({
   if (!nextBlocks) return;
 
   try {
-    await callSlack("chat.update", {
-      channel: channelId,
-      ts: messageTs,
-      text: messageText ?? "This request is no longer active.",
-      blocks: nextBlocks,
-    });
+    await callSlack(
+      "chat.update",
+      {
+        channel: channelId,
+        ts: messageTs,
+        text: messageText ?? "This request is no longer active.",
+        blocks: nextBlocks,
+      },
+      { timeoutMs: 800 }
+    );
   } catch (error) {
     console.error("Could not mark the approval message inactive", error);
   }
@@ -157,11 +176,15 @@ async function notifyNotAuthorized({
   if (!channelId || !userId) return;
 
   try {
-    await callSlack("chat.postEphemeral", {
-      channel: channelId,
-      user: userId,
-      text: "You are not an authorized approver for Acme Wallet requests. This approval is still waiting for an authorized approver.",
-    });
+    await callSlack(
+      "chat.postEphemeral",
+      {
+        channel: channelId,
+        user: userId,
+        text: "You are not an authorized approver for Acme Wallet requests. This approval is still waiting for an authorized approver.",
+      },
+      { timeoutMs: 800 }
+    );
   } catch (error) {
     console.error("Could not send the not-authorized ephemeral message", error);
   }

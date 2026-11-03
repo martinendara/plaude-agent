@@ -2,7 +2,7 @@
 
 Customer support agent for Acme Wallet, a fictional digital wallet, built for the Plaude engineering challenge.
 
-[Open the chat](https://plaude-agent.vercel.app/chat) · [Stage 1 approval demo](https://plaude-agent.vercel.app/)
+[Open the chat](https://plaude-agent.vercel.app/chat) · [Stage 1 approval demo](https://plaude-agent.vercel.app/stage-1)
 
 ## 1. What it is
 
@@ -57,14 +57,14 @@ Rules only add approvals. There is no `allow`, `deny`, `and`, `or`, negation or 
 
 `/operator/[runId]` shows one conversation as a sequence of actions: what was requested, which rules fired (labeled CODE or TEXT), what was posted to Slack, who decided and when, and what the wallet did. It is the only place where the three levels are visible for the same run.
 
-The panel is read-only. Approval remains in Slack, behind the signature check and the approver allowlist, so the panel never becomes a second authorization path.
+The panel is read-only. Approval remains in Slack, behind the signature check and the approver check, so the panel never becomes a second authorization path.
 
 The records live in a namespaced durable stream (`timeline`), separate from the chat stream, so operator data never mixes with customer messages and no database is needed. The page polls every two seconds and stops when the run is terminal (D27).
 
 ## 6. Safety details
 
 - **Slack signature.** Every click is verified as HMAC-SHA256 over `v0:<timestamp>:<rawBody>` and compared with `timingSafeEqual`; requests older than five minutes are rejected with `401` ([D6](./DECISIONS.md#d6-verify-slacks-hmac-signature-not-the-legacy-verification-token)).
-- **Approver allowlist.** Only Slack user IDs in `SLACK_APPROVER_IDS` can decide. A missing or empty list means nobody can approve ([D10](./DECISIONS.md#d10-authorize-approvers-with-a-user-id-allowlist-and-fail-closed)).
+- **Approvers.** Anyone who is a member of `#approvals` can decide, so approvers are managed in Slack; an optional explicit allowlist in `SLACK_APPROVER_IDS` is added to that membership. The check calls `conversations.members` and fails closed on a Slack error, a timeout or a missing channel ID ([D29](./DECISIONS.md#d29-authorize-approvers-by-approvals-channel-membership-plus-an-optional-allowlist)).
 - **Cross-conversation lock.** A claim hook and a retained done marker allow one refund or reversal per transaction, even across conversations ([D26](./DECISIONS.md#d26-one-transaction-action-at-a-time-across-conversations-with-a-retained-done-marker)).
 - **Ownership before the lock.** Another customer's transaction is refused before `claimTransaction` and before `requestApproval`; no approver can override it ([D17](./DECISIONS.md#d17-tools-trust-the-wallet-not-the-model)).
 - **Timeout.** If nobody decides within 10 minutes (a durable `sleep`, so the wait uses no compute), the action is skipped and the tool returns `timed_out`; the agent reports that no human answered in time ([D8](./DECISIONS.md#d8-timeout-a-hook-with-a-durable-sleep)).
@@ -77,13 +77,13 @@ The records live in a namespaced durable stream (`timeline`), separate from the 
 npm run test
 ```
 
-41 tests on Node's built-in runner (no test dependency) cover:
+47 tests on Node's built-in runner (no test dependency) cover:
 
 - every approval threshold on both sides, in cents, plus the fraud-lock and ownership rules;
 - additive text rules: they can add an approval and can never clear one;
 - the rule DSL: valid `is` and `>` rules, unknown facts and tools, `and`, `allow` and `skip`;
 - ownership order: `refund_fee` and `reverse_transaction` as Diego on Ana's fraud-locked transactions return `refused`, with zero claims and zero approval requests;
-- Slack signature checks (valid, altered signature, altered body, old and malformed timestamps, wrong length), fail-closed approver lists, inactive Slack blocks and USD formatting.
+- Slack signature checks (valid, altered signature, altered body, old and malformed timestamps, wrong length), fail-closed approver authorization (allowlist, channel membership, Slack failure), inactive Slack blocks and USD formatting.
 
 The suite was checked with manual mutations: moving the refund threshold, letting extra rules clear a code approval, and moving the ownership check after the rules or after the claim each make tests fail. `npm run build` also type-checks the tests.
 
@@ -96,16 +96,16 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000/chat> for the agent, or <http://localhost:3000/> for the Stage 1 approval demo. `npm run build` and `npm run test` work without Slack credentials or a `.env.local`.
+Open <http://localhost:3000/chat> for the agent, or <http://localhost:3000/stage-1> for the Stage 1 approval demo (`/` redirects to `/chat`). `npm run build` and `npm run test` work without Slack credentials or a `.env.local`.
 
 Environment variables (names only; copy `.env.example` to `.env.local`):
 
 | Name | Purpose |
 |---|---|
-| `SLACK_BOT_TOKEN` | Bot token with `chat:write` |
+| `SLACK_BOT_TOKEN` | Bot token with `chat:write` plus `channels:read` (public `#approvals`) or `groups:read` (private) |
 | `SLACK_SIGNING_SECRET` | Verifies that requests come from Slack |
 | `SLACK_APPROVALS_CHANNEL_ID` | Channel that receives approval requests |
-| `SLACK_APPROVER_IDS` | Comma-separated Slack user IDs allowed to decide; unset or empty means nobody can approve |
+| `SLACK_APPROVER_IDS` | Optional comma-separated Slack user IDs allowed to decide in addition to `#approvals` members |
 | `GROQ_API_KEY` | Groq key for the primary model |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI Studio key for the manual Gemini fallback |
 | `APP_BASE_URL` | Public origin used to build the View timeline link in Slack |
@@ -113,10 +113,10 @@ Environment variables (names only; copy `.env.example` to `.env.local`):
 Slack app setup:
 
 1. Create a Slack app and install it in the workspace.
-2. Add the `chat:write` bot scope and invite the bot to `#approvals`.
+2. Add the `chat:write` and `channels:read` bot scopes (use `groups:read` if `#approvals` is private) and invite the bot to `#approvals`.
 3. Keep Socket Mode off. Under Interactivity, set the Request URL to `https://<your-deployment>/api/slack/interactions`. All Slack clicks go to this single endpoint.
-4. Put the bot token and the signing secret in `.env.local` and in Vercel.
-5. Put the approver Slack user IDs in `SLACK_APPROVER_IDS`, comma-separated, in both places.
+4. Put the bot token, the signing secret and the approvals channel ID in `.env.local` and in Vercel.
+5. Optional: add extra approver Slack user IDs to `SLACK_APPROVER_IDS`, comma-separated, in both places.
 
 A click cannot reach `localhost`; use a public HTTPS deployment to exercise the full Slack loop. After changing environment variables in Vercel, redeploy. `APP_BASE_URL` builds the View timeline link in Slack; without it, the Slack button is omitted.
 

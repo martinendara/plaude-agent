@@ -183,6 +183,8 @@ If `SLACK_APPROVER_IDS` is missing or empty, no one can approve and a `console.e
 - Runtime logs last one hour on Hobby. The durable audit trail is the Stage 4 run timeline, not `console` output.
 - Stage 5 adds tests: an unauthorized user must not resume the hook, and an empty list must block every approver.
 
+**Revised by D29.** Channel membership now also authorizes a click, and the allowlist became an optional addition. A deployment with no `SLACK_APPROVER_IDS` now falls back to `#approvals` membership rather than blocking every approval.
+
 ## D11. Pin the AI SDK stack to the `ai@6` line that `DurableAgent` requires
 
 **Context.** The brief requires `DurableAgent`. It is not part of `workflow@5.2.3`; it lives in the separate `@workflow/ai` package, which the Workflow docs mark as deprecated in favor of `WorkflowAgent`. `@workflow/ai@5.0.3` peers on `ai@^6` and depends on `@ai-sdk/provider@^3`, while the current `ai@7` and `@ai-sdk/google@4.x` use provider v4. The two lines cannot be mixed.
@@ -528,3 +530,28 @@ The ordering matters: the done marker is created **before** the lock is released
 **Known limit.** Slack sends the message blocks as that client currently displays them. If an approver clicks from a client that has not received the earlier `chat.update` carrying the decision, the payload can be the outdated version and the rewrite would omit "Approved by…". It is improbable (the decision update normally arrives before the click) and the decision still remains in the read-only operator panel, which does not depend on the Slack message.
 
 **Consequences.** A resolved message keeps its decision text and loses only the actionable buttons; when Slack sends no blocks, missing or empty, the route leaves the message untouched rather than risking an erasure. The function is pure and is covered by the Stage 5 tests.
+
+## D29. Authorize approvers by `#approvals` membership, plus an optional allowlist
+
+**Context.** D10 required every approver to be listed in `SLACK_APPROVER_IDS`. That is precise but does not scale to a demo: every evaluator would need a code change and a redeploy before they could approve anything. The approvals channel already identifies the people the workspace trusts to decide, and Slack manages that membership.
+
+**Decision.** A click is authorized when either condition holds:
+- the user ID is in `SLACK_APPROVER_IDS` (checked first, so no Slack call is needed), or
+- `conversations.members` on `SLACK_APPROVALS_CHANNEL_ID` contains the clicker.
+
+The HMAC signature check is unchanged. The membership call uses `limit=1000` and a 1.5-second `AbortSignal.timeout`; the unauthorized ephemeral message is capped at 800 ms, so both stay inside Slack's 3-second ack deadline. The decision fails closed: a Slack error, a timeout, a missing bot token or a missing channel ID refuses the click and leaves the hook waiting. If Slack returns more than one page of members (`next_cursor`), the check refuses rather than guessing. `lib/approvers.ts` stays pure: it receives a membership lookup function, so allowlist, member, non-member and API-failure outcomes are unit-tested without HTTP.
+
+**Alternatives considered.**
+- Allowlist only (D10): manual onboarding per person and a redeploy for every evaluator.
+- Any member of the workspace: too broad; the workspace may contain guests.
+- Slack user groups (`usergroups.users.*`): a real role primitive, but an extra scope and an extra indirection; the channel already is the role.
+- A database or admin UI for roles: the right end state, but new infrastructure outside the zero-spend rule.
+- Fail open when Slack is unreachable: one API incident would turn into "anyone can approve".
+
+**Consequences.**
+- Approver management moves to Slack: adding someone to `#approvals` grants the right to decide, so channel membership is now a security boundary and must be managed as one.
+- The bot needs `channels:read` for a public channel or `groups:read` for a private one, and it must be in the channel to call `conversations.members`.
+- The optional allowlist remains useful for an approver who should not sit in the channel, and it is checked first, so it still works during a Slack outage.
+- A channel with more than 1,000 members cannot be checked within the ack budget and is refused; that is a documented limit, not a silent fallback.
+- The D10 rule "unset `SLACK_APPROVER_IDS` means nobody can approve" is retired: unset now means "channel members only".
+- The 1.5-second timeout adds no dependency: `AbortSignal.timeout` is a Web API available in the Node runtime.
